@@ -131,13 +131,30 @@ the week-one hypothesis behaving as designed, on a second platform.
 
 Verified here: the tap (swallow, press/release, re-arm), recording, the gate
 (including that it learns: quiet peaks loosened it to 0.0098, floored at 0.002),
-transcription, the clipboard, **Command-V into a real TextEdit document**, Escape
-cancel, toggle mode, all eight pill states, the menu bar item, the signed bundle,
-the login item, and clean shutdown.
+transcription, the clipboard, **the whole pipeline into a focused TextEdit
+document**, Escape cancel, toggle mode, all eight pill states, the menu bar item
+and its wording, **Insert last transcript**, pause and resume with the icon dimmed,
+Check permissions, the signed bundle surviving a rebuild with its Accessibility
+grant intact, the login item, and clean shutdown.
 
-Needs a human: paste into Safari / TextEdit / Terminal / VS Code, pause and resume,
-pause pass-through, Check permissions from a cold grant, start at login,
-sleep/wake, and `MIN_PEAK` against a real voice.
+Needs a human: a real keypress end to end (the pill's **Paused** on a press while
+paused, and Option reaching the document while paused), Copy last transcript by
+clicking, sleep/wake, and `MIN_PEAK` against a real voice.
+
+## Tests
+
+Two suites pin the behaviour that came out of measurement, so retuning a constant
+cannot quietly change what the app promises:
+
+```sh
+.venv/bin/python scripts/test_hotkey_logic.py   # what the tap swallows and passes
+.venv/bin/python scripts/test_core_logic.py     # gate, loop detection, window, filter, vocabulary
+```
+
+`test_hotkey_logic.py` asserts the central promise directly: Right Option is
+swallowed while running, reaches the app while paused, is never swallowed with
+`SUPPRESS_HOTKEY: false`, left Option is never touched, and Escape is observed but
+passed through.
 
 ## Recovery
 

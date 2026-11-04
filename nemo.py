@@ -1007,6 +1007,11 @@ def vocabulary_prompt() -> str:
             prompt = f"{base}, {emphasis}"
         else:
             prompt = base or emphasis
+        if len(prompt) > VOCAB_MAX_CHARS:
+            # A single very long line can slip past the budget above; the model's
+            # prompt window is small and overflow is silently ignored, so bound it.
+            prompt = (prompt[:VOCAB_MAX_CHARS].rsplit(",", 1)[0]
+                      or prompt[:VOCAB_MAX_CHARS])
         _vocab_cache["stamp"] = stamp
         _vocab_cache["prompt"] = prompt
         return prompt
