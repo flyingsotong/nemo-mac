@@ -1243,7 +1243,10 @@ class Nemo:
         # Report the whole path, not just the server call: the output half is a
         # real part of what he feels and it used to be invisible in the log.
         total = (time.perf_counter() - t0) * 1000
-        ctx_note = f" win={self.server.ac}" if sys.platform == "darwin" else ""
+        # An adopted server (one we did not start) has no known window; say so
+        # rather than printing 0.
+        win = self.server.ac or "adopted"
+        ctx_note = f" win={win}" if sys.platform == "darwin" else ""
         log(f"audio {seconds:.1f}s{ctx_note} -> {elapsed:.0f}ms "
             f"+{total - elapsed:.0f}ms out = {total:.0f}ms peak={peak:.4f}: {text!r}")
         idle = time.time() - self._last_take_at

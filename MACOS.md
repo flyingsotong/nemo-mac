@@ -110,8 +110,31 @@ CPU fallback, same clip: 8.1 s encode against 490 ms on Metal. So Metal is
 genuinely doing the work; the bottle is not the bottleneck (a native source
 build measured *slower*, 650 ms).
 
-Release-to-paste will be added to this table from `nemo.log` after a week of use,
-the way the Windows README does it.
+Release-to-paste, driven end to end through the microphone with the clipboard as
+the only output (speaker playback, synthetic Right Option, so the timing excludes
+human key travel and the paste keystroke):
+
+| Take | Audio | Engine | Output | Total | Peak |
+|---|---|---|---|---|---|
+| push | 6.0 s | 323 ms | 4 ms | 328 ms | 0.110 |
+| toggle | 5.5 s | 318 ms | 3 ms | 321 ms | 0.118 |
+
+The output half is 3-4 ms, matching the Windows measurement. The engine half is
+what the product feels like, and it is why `AUDIO_CTX` exists.
+
+First inference after start measured **797 ms**, and the keep-warm logged itself
+absorbing it (`keep-warm absorbed a cold take`) before anyone was waiting. That is
+the week-one hypothesis behaving as designed, on a second platform.
+
+## Acceptance status
+
+Verified here: the tap (swallow, press/release, re-arm), recording, the gate,
+transcription, the clipboard, Escape cancel, toggle mode, all eight pill states,
+the menu bar item, the signed bundle, and clean shutdown.
+
+Needs a human: paste into Safari / TextEdit / Terminal / VS Code, pause and resume,
+pause pass-through, Check permissions from a cold grant, start at login,
+sleep/wake, and `MIN_PEAK` against a real voice.
 
 ## Recovery
 
