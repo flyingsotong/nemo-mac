@@ -69,8 +69,8 @@ Also: `-mc 0` is needed, or one dictation's text leaks into the next.
 - Menu bar item installs and shows a template waveform.
 - Mic opens and meters; **ambient alone peaks at 0.0139**, above the old 0.012
   gate, so `MIN_PEAK` starts at 0.025 here.
-- Bundle: 50 MB, signed `Apple Development: Alan Soon (KF8DGTVPW3)`,
-  `LSUIElement`, `NSMicrophoneUsageDescription` present.
+- Bundle: 50 MB, signed with a stable Apple Development identity, `LSUIElement`,
+  `NSMicrophoneUsageDescription` present.
 
 ## Not verified (needs a human)
 
