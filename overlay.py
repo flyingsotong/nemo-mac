@@ -245,6 +245,9 @@ def render(label: str, phase: float, hist) -> Image.Image:
     elif label == "paused":
         dot_col, text = MUTED, "Paused"
         dot_r = 4.6 * SS
+    elif label.startswith("alert:"):
+        dot_col, text = RED, label[6:]
+        dot_r = 4.6 * SS
     elif label.startswith("say:"):
         # generic one-line confirmation for tray actions, shown on the app's own
         # surface instead of a Windows toast (which lags about a second)
@@ -350,7 +353,7 @@ class PillWindow:
                     if kind == "state":
                         label = value
                         if (value in ("done", "error", "paused")
-                                or value.startswith("say:")):
+                                or value.startswith(("say:", "alert:"))):
                             until = time.time() + 0.9
                         elif value.startswith("hint:"):
                             until = time.time() + 4.5
@@ -362,7 +365,7 @@ class PillWindow:
                 self._log(f"pill queue error: {exc}")
 
             if (label in ("done", "error", "paused")
-                    or label.startswith(("say:", "hint:"))) and time.time() > until:
+                    or label.startswith(("say:", "hint:", "alert:"))) and time.time() > until:
                 label = "hidden"
 
             now = time.time()

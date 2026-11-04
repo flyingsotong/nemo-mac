@@ -44,18 +44,43 @@ VOCAB_FILE = ROOT / "vocabulary.txt"
 VOCAB_MAX_CHARS = 600     # whisper's prompt window is small; stay well inside it
 
 APP_NAME = "Nemo"
-APP_VERSION = "0.1"
+APP_VERSION = "0.2"
 
 # ---- knobs ----------------------------------------------------------------
 HOTKEY_VK = 0xA5          # Right Alt (VK_RMENU)
 SUPPRESS_HOTKEY = True    # stop Right Alt reaching the focused app (menus / AltGr)
 LANGUAGE = "en"           # set to "" for auto-detect
-THREADS = 6
+THREADS = 4 if sys.platform == "darwin" else 6
 PORT = 8129
 SAMPLE_RATE = 16000
 MIC_DEVICE = None         # None = system default; substring, or an int device index
 MIN_SECONDS = 0.30
-MIN_PEAK = 0.012          # int16, normalised: reject near-silence
+MIN_PEAK = 0.025 if sys.platform == "darwin" else 0.012  # int16, normalised
+# The Windows constant was calibrated against one soundbar. Measured on this
+# MacBook's built-in mic, an idle room peaks at 0.0139 - above the old 0.012 - so
+# the gate starts higher here and the learned gate loosens it from real takes.
+# Confirm with --selftest 4 while speaking.
+# Below this the microphone handed back digital silence, not a quiet room.
+# Distinct from MIN_PEAK so the pill can say "No mic audio" instead of blaming
+# the speaker. Recalibrate on a new machine; do not treat it as portable.
+SILENT_PEAK = 0.0005
+# Silent inference while idle, so a take after a long gap does not pay the
+# cold-start cost while someone is waiting. 0 disables. On battery the Mac
+# build stretches this; see keep_warm_interval().
+KEEP_WARM_SEC = 300
+# Encoder window, in 20 ms frames. Whisper always encodes a fixed window; 1500
+# frames is the 30 s default and 640 is 12.8 s. This is a *server* setting, not a
+# per-request field: measured on this build, varying audio_ctx between requests
+# corrupts the next decode, and a smaller-than-audio window degrades far beyond
+# mere truncation. A take longer than this window restarts the server larger.
+AUDIO_CTX = 640
+# Learned gate. Not overridable: a gate that can be set stricter than the
+# constant would start rejecting speech that works today.
+GATE_MIN_SAMPLES = 20
+GATE_FRACTION = 0.35
+GATE_FLOOR = 0.002
+SLOW_MS = 400
+PEAKS_MAX = 500
 PASTE = True
 BEEP = False              # the pill is the feedback now; beeps off by default
 OVERLAY = True
@@ -72,10 +97,25 @@ MODEL_FILE = "ggml-large-v3-turbo.bin"
 # A config.json beside the exe overrides any knob above, so the frozen build can
 # be reconfigured (mic, language, hotkey) without rebuilding it.
 _CONFIG_FILE = ROOT / "config.json"
+LEVELS_FILE = ROOT / "mic_levels.json"
+DATA = ROOT
+if sys.platform == "darwin":
+    # A .app is replaced wholesale, so user files live in Application Support.
+    # Source runs use the same directory, which is where the model was staged.
+    from nemo_platform.macos.paths import data_dir, server_exe
+    DATA = data_dir()
+    SERVER_EXE = server_exe()
+    BIN = SERVER_EXE.parent
+    MODELS_DIR = DATA / "models"
+    LOGFILE = DATA / "nemo.log"
+    ONBOARD_MARK = DATA / ".onboarded"
+    VOCAB_FILE = DATA / "vocabulary.txt"
+    LEVELS_FILE = DATA / "mic_levels.json"
+    _CONFIG_FILE = DATA / "config.json"
 _OVERRIDABLE = {"HOTKEY_VK", "SUPPRESS_HOTKEY", "LANGUAGE", "THREADS", "PORT",
                 "SAMPLE_RATE", "MIC_DEVICE", "MIN_SECONDS", "MIN_PEAK",
                 "PASTE", "BEEP", "OVERLAY", "DICTATION_MODE", "TRAILING_SPACE",
-                "MODEL_FILE"}
+                "MODEL_FILE", "KEEP_WARM_SEC", "SILENT_PEAK", "AUDIO_CTX"}
 
 
 def reload_config() -> bool:
@@ -216,18 +256,33 @@ def beep(kind: str) -> None:
 # Pillow at 4x and downsampled, so curves are genuinely smooth instead of
 # whole-pixel steps. It sets DPI awareness itself, but this call stays because it
 # must happen before any window is created in the process.
-try:
-    from overlay import PillWindow as Overlay
-    _OVERLAY_ERROR = None
-except Exception as _exc:  # display is optional; dictation still works without it
-    Overlay = None
-    _OVERLAY_ERROR = _exc
+if sys.platform == "darwin":
+    try:
+        from nemo_platform.macos.pill import PillWindow as Overlay
+        _OVERLAY_ERROR = None
+    except Exception as _exc:
+        Overlay = None
+        _OVERLAY_ERROR = _exc
+    try:
+        from nemo_platform.macos.menubar import MenuBar as Tray
+        _TRAY_ERROR = None
+    except Exception as _exc:
+        Tray = None
+        _TRAY_ERROR = _exc
+else:
+    try:
+        from overlay import PillWindow as Overlay
+        _OVERLAY_ERROR = None
+    except Exception as _exc:  # display is optional; dictation still works without it
+        Overlay = None
+        _OVERLAY_ERROR = _exc
 
-try:
-    from tray import Tray
-except Exception as _exc:  # tray is optional too; it carries quit and settings
-    Tray = None
-    _TRAY_ERROR = _exc
+    try:
+        from tray import Tray
+        _TRAY_ERROR = None
+    except Exception as _exc:  # tray is optional too; it carries quit and settings
+        Tray = None
+        _TRAY_ERROR = _exc
 
 
 def _enable_dpi_awareness() -> None:
@@ -380,10 +435,12 @@ class Server:
         # then report the real backend instead of guessing, and because a user
         # wondering "is this using my GPU?" deserves an answer from the process,
         # not from a hard-coded string.
-        self._lines: collections.deque[str] = collections.deque(maxlen=200)
+        self._lines: collections.deque[str] = collections.deque(maxlen=400)
         self._gpu_loaded = False
         self._gpu_device = ""
         self._cpu_backend = ""
+        self._accel = ""
+        self.ac = 0
 
     @property
     def url(self) -> str:
@@ -398,8 +455,18 @@ class Server:
         """Read the banner whisper-server prints: which backends it loaded."""
         self._lines.append(line)
         low = line.lower()
+        if "found device:" in line:
+            name = line.split("found device:", 1)[1].strip()
+            if name:
+                self._gpu_device = name
+                self._gpu_loaded = True
+                self._accel = "Metal"
+        if "using mtl" in low or "mtl0 backend" in low or "ggml_metal" in low:
+            self._gpu_loaded = True
+            self._accel = self._accel or "Metal"
         if "vulkan backend" in low and "loaded" in low:
             self._gpu_loaded = True
+            self._accel = "Vulkan"
         elif line.startswith("ggml_vulkan: 0 ="):
             name = line.split("0 =", 1)[1].split("(")[0].strip()
             if name:
@@ -424,7 +491,7 @@ class Server:
         """
         if self._gpu_loaded or self._cpu_backend:
             if self._gpu_loaded:
-                return {"ready": True, "accelerator": "Vulkan",
+                return {"ready": True, "accelerator": self._accel or "Vulkan",
                         "device": self._gpu_device or "GPU"}
             return {"ready": True, "accelerator": "CPU",
                     "device": f"CPU only ({self._cpu_backend})"}
@@ -436,9 +503,19 @@ class Server:
         return {"ready": True, "accelerator": "?", "device": "Engine: backend unknown"}
 
 
-    def ensure(self, wait: float = 180.0) -> bool:
+    def ensure(self, wait: float = 180.0, ac: int | None = None) -> bool:
+        """Start the server, or widen its encoder window for a long take.
+
+        A window that only ever grows is safe on this build; changing it between
+        requests is not. So a take that needs more frames costs one restart and
+        then stays wide until the app restarts.
+        """
+        want = max(int(ac or 0), int(self.ac or 0), int(AUDIO_CTX))
         if self._listening():
-            return True
+            if want <= self.ac or not self.ac:
+                return True
+            log(f"widening encoder window {self.ac} -> {want} frames")
+            self.shutdown()
         # If another thread is already starting it (tray reload during a
         # dictation, say), wait for it to come up rather than serialising behind
         # the lock for up to `wait` seconds.
@@ -458,12 +535,17 @@ class Server:
             args = [str(SERVER_EXE), "-m", str(MODEL),
                     "--host", "127.0.0.1", "--port", str(self.port),
                     "-t", str(THREADS)]
+            if sys.platform == "darwin":
+                # Greedy: for determinism, not speed (measured: no gain).
+                # -mc 0 stops one dictation's text leaking into the next.
+                args += ["-bs", "1", "-bo", "1", "-mc", "0", "-ac", str(want)]
             if LANGUAGE:
                 args += ["-l", LANGUAGE]
             flags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
             log(f"starting server: {' '.join(args)}")
             self.proc = subprocess.Popen(
-                args, cwd=str(BIN), stdout=subprocess.DEVNULL,
+                args, cwd=str(BIN) if BIN.exists() else None,
+                stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE, creationflags=flags,
             )
             # stderr must be drained or the pipe fills and the server blocks, so
@@ -477,7 +559,8 @@ class Server:
                     log(f"server exited with {self.proc.returncode}")
                     return False
                 if self._listening():
-                    log(f"server ready on port {self.port}")
+                    self.ac = want
+                    log(f"server ready on port {self.port} (window {want} frames)")
                     return True
                 time.sleep(0.15)
             log("server did not become ready")
@@ -529,22 +612,35 @@ class Server:
                     pass
 
 
+def _memory_gb() -> float:
+    if sys.platform != "darwin":
+        return 32.0
+    try:
+        return int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], timeout=2)) / 1e9
+    except Exception:
+        return 16.0
+
+
 def recommend_model(info: dict | None = None) -> tuple[str, str]:
     """Which model suits this machine, and the reason, based on a real probe.
 
-    Measured on this hardware with a 3.7 s phrase: large-v3-turbo takes 8.7 s on
-    CPU but 114 ms on Vulkan; small.en takes 1.7 s on CPU and 112 ms on the GPU.
-    So on a GPU the bigger model is free, and on CPU it is five times the wait.
+    On a GPU the bigger model is free. On an M5, 1.6 GB is a small share of
+    unified memory; step down only under about 12 GB, and to small.en only when
+    there is no Metal (an Intel Mac, or a CPU fallback).
     """
     if info is None:
         info = probe_backend()
     english = (not LANGUAGE) or str(LANGUAGE).lower().startswith("en")
-    if info.get("accelerator") == "Vulkan":
-        return "large-v3-turbo", f"Vulkan GPU found: {info['device']}"
-    if info.get("accelerator") == "CPU":
+    acc = info.get("accelerator")
+    if acc in ("Vulkan", "Metal"):
+        if acc == "Metal" and _memory_gb() < 12:
+            return "large-v3-turbo-q5_0", (
+                f"Metal GPU, only {_memory_gb():.0f} GB of unified memory")
+        return "large-v3-turbo", f"{acc} GPU found: {info.get('device') or 'GPU'}"
+    if acc == "CPU":
         if english:
-            return "small.en", "no Vulkan GPU, so the CPU is doing the work"
-        return "large-v3-turbo-q5_0", ("no Vulkan GPU, so the CPU is doing the work; "
+            return "small.en", "no GPU, so the CPU is doing the work"
+        return "large-v3-turbo-q5_0", ("no GPU, so the CPU is doing the work; "
                                        "small.en is English-only")
     return "large-v3-turbo", "could not determine which engine will run"
 
@@ -669,12 +765,10 @@ def _offer_model_download(overlay) -> bool:
     on a machine without Vulkan means eight seconds per phrase - so the offer is now
     shaped by what the engine can actually do here.
     """
-    if os.name != "nt":
-        return False
     info = probe_backend()
     want, reason = recommend_model(info)
-    gpu = info.get("accelerator") == "Vulkan"
-    unknown = info.get("accelerator") not in ("Vulkan", "CPU")
+    gpu = info.get("accelerator") in ("Vulkan", "Metal")
+    unknown = info.get("accelerator") not in ("Vulkan", "Metal", "CPU")
     other = "small.en" if want != "small.en" else "large-v3-turbo"
     if want == "large-v3-turbo-q5_0":
         other = "large-v3-turbo"
@@ -683,10 +777,9 @@ def _offer_model_download(overlay) -> bool:
             f"No   = download {other} instead\n"
             "Cancel = not now")
     if gpu:
-        body = (f"A Vulkan GPU was found: {info.get('device') or 'GPU'}\n\n"
-                "Recommended: large-v3-turbo (1.62 GB), about a tenth of a second\n"
-                "per phrase. On a GPU the smaller model is no faster, so there is\n"
-                "nothing to gain from downloading less.\n\n" + tail)
+        body = (f"A {info.get('accelerator')} GPU was found: {info.get('device') or 'GPU'}\n\n"
+                "Recommended: large-v3-turbo (1.62 GB). On a GPU the smaller model\n"
+                "is no faster, so there is nothing to gain from downloading less.\n\n" + tail)
     elif unknown:
         body = ("Could not tell whether a GPU is available, so here are both:\n\n"
                 "  small.en         0.49 GB   faster, English only\n"
@@ -699,21 +792,29 @@ def _offer_model_download(overlay) -> bool:
                 "  large-v3-turbo   1.62 GB   about 9 seconds per phrase\n\n"
                 "Measured on a Ryzen 5 7500F; a laptop CPU will be slower.\n\n" + tail)
     text = f"Nemo needs a speech model.\n\n{body}"
-    try:
-        import ctypes
-        answer = ctypes.windll.user32.MessageBoxW(
-            None, text, f"{APP_NAME} {APP_VERSION}", 0x03 | 0x40)  # YESNOCANCEL | INFO
-    except Exception as exc:
-        log(f"could not ask about the model: {exc}")
-        return False
-
-    if answer == 6:      # IDYES
-        pick = want
-    elif answer == 7:    # IDNO
-        pick = other
-    else:                # IDCANCEL / closed
-        log(f"model download declined; put {MODEL.name} in {MODELS_DIR}")
-        return False
+    if sys.platform == "darwin":
+        from AppKit import NSApplication
+        NSApplication.sharedApplication()
+        from nemo_platform.macos.dialog import choose_model
+        pick = choose_model(want, other, text)
+        if not pick:
+            log(f"model download declined; put {MODEL.name} in {MODELS_DIR}")
+            return False
+    else:
+        try:
+            import ctypes
+            answer = ctypes.windll.user32.MessageBoxW(
+                None, text, f"{APP_NAME} {APP_VERSION}", 0x03 | 0x40)  # YESNOCANCEL | INFO
+        except Exception as exc:
+            log(f"could not ask about the model: {exc}")
+            return False
+        if answer == 6:      # IDYES
+            pick = want
+        elif answer == 7:    # IDNO
+            pick = other
+        else:
+            log(f"model download declined; put {MODEL.name} in {MODELS_DIR}")
+            return False
 
     def show(pct: int) -> None:
         if overlay:
@@ -733,8 +834,32 @@ def clean(text: str) -> str:
     return "" if text.strip().lower() in HALLUCINATIONS else text
 
 
+def hotkey_label() -> str:
+    return "Right Option" if sys.platform == "darwin" else "Right Alt"
+
+
+def privacy_line() -> str:
+    where = "Mac" if sys.platform == "darwin" else "PC"
+    return f"Local only: audio never leaves this {where}"
+
+
+def audio_context_frames(pcm: np.ndarray) -> int:
+    """Frames of encoder window for this utterance, plus a small tail margin.
+
+    One frame is 20 ms (1500 frames = 30 s). Too small and the tail is clipped.
+    """
+    frames = (len(pcm) + 319) // 320 + 32
+    return max(128, min(1500, frames))
+
+
 def copy_to_clipboard(text: str) -> bool:
     """Put text on the clipboard. True if it landed."""
+    if sys.platform == "darwin":
+        from nemo_platform.macos.paste import copy_text
+        ok = copy_text(text)
+        if not ok:
+            log("clipboard copy failed")
+        return ok
     try:
         import pyperclip
     except Exception as exc:
@@ -763,6 +888,11 @@ def paste(text: str) -> None:
     payload = text
     if TRAILING_SPACE and payload and not payload.endswith(" "):
         payload += " "
+    if sys.platform == "darwin":
+        from nemo_platform.macos.paste import paste_text
+        if not paste_text(payload):
+            log("paste failed")
+        return
     if not copy_to_clipboard(payload):
         return
     try:
@@ -788,9 +918,13 @@ def vocabulary_prompt() -> str:
     """Terms from vocabulary.txt, joined into whisper's initial prompt.
 
     Cached against the file's mtime and size so the usual case - unchanged file,
-    one read per utterance - costs a stat instead of a read and a parse. Kept
-    short on purpose: a long prompt skews style and eats the model's prompt
-    window.
+    one read per utterance - costs a stat instead of a read and a parse.
+
+    Measured on this whisper build, the prompt is weighted by position, not
+    counted: a term about four tokens from the end has no effect at all, and the
+    last two or three decide the spelling. So the list is repeated as a short
+    tail, which makes the terms listed *first* the ones that land. Reversing the
+    file instead would work too, but this keeps file order meaningful.
     """
     try:
         if not VOCAB_FILE.exists():
@@ -805,9 +939,16 @@ def vocabulary_prompt() -> str:
             if not line or line.startswith("#"):
                 continue
             terms.append(line)
-        prompt = ", ".join(terms)
-        if len(prompt) > VOCAB_MAX_CHARS:
-            prompt = prompt[:VOCAB_MAX_CHARS].rsplit(",", 1)[0]
+        emphasis = ", ".join(terms[:3])
+        base = ", ".join(terms)
+        # Trim the body, never the tail: the tail is the part with influence.
+        budget = VOCAB_MAX_CHARS - len(emphasis) - 2
+        if budget > 0 and len(base) > budget:
+            base = base[:budget].rsplit(",", 1)[0]
+        if emphasis and base:
+            prompt = f"{base}, {emphasis}"
+        else:
+            prompt = base or emphasis
         _vocab_cache["stamp"] = stamp
         _vocab_cache["prompt"] = prompt
         return prompt
@@ -816,13 +957,91 @@ def vocabulary_prompt() -> str:
         return ""
 
 
+# ---- learned silence gate -------------------------------------------------
+def _load_peaks() -> list[float]:
+    try:
+        data = json.loads(LEVELS_FILE.read_text(encoding="utf-8"))
+        peaks = data.get("peaks") or []
+        return [float(p) for p in peaks][-PEAKS_MAX:]
+    except Exception:
+        return []
+
+
+def record_peak(peak: float) -> None:
+    """Remember an accepted take's peak. The gate may only ever get looser."""
+    peaks = _load_peaks()
+    peaks.append(float(peak))
+    peaks = peaks[-PEAKS_MAX:]
+    try:
+        LEVELS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        LEVELS_FILE.write_text(json.dumps({"peaks": peaks}), encoding="utf-8")
+    except OSError as exc:
+        log(f"could not record peak: {exc}")
+
+
+def effective_min_peak() -> float:
+    """After 20 takes, 35% of the 10th percentile, floored and capped at MIN_PEAK."""
+    peaks = _load_peaks()
+    constant = float(MIN_PEAK)
+    if len(peaks) < GATE_MIN_SAMPLES:
+        return constant
+    ordered = sorted(peaks)
+    index = max(0, int(0.10 * (len(ordered) - 1)))
+    learned = GATE_FRACTION * ordered[index]
+    return max(GATE_FLOOR, min(constant, learned))
+
+
+def keep_warm_interval() -> float:
+    base = float(KEEP_WARM_SEC or 0)
+    if base <= 0:
+        return 0
+    if sys.platform == "darwin":
+        from nemo_platform.macos.power import constrained
+        if constrained():
+            return max(base * 3, 900)
+    return base
+
+
+def keep_warm_once(server: "Server") -> None:
+    """One silent 0.4 s inference. Never called while a take is open."""
+    if not server.ensure(wait=30):
+        return
+    pcm = np.zeros(int(SAMPLE_RATE * 0.4), dtype=np.int16)
+    t0 = time.perf_counter()
+    try:
+        server.transcribe(pcm_to_wav(pcm))
+    except Exception as exc:
+        log(f"keep-warm failed: {exc}")
+        return
+    ms = (time.perf_counter() - t0) * 1000
+    if ms > SLOW_MS:
+        log(f"keep-warm absorbed a cold take ({ms:.0f}ms)")
+    else:
+        log(f"keep-warm {ms:.0f}ms")
+
+
+def keep_warm_loop(app: "Nemo", stop: threading.Event) -> None:
+    last = 0.0
+    while not stop.wait(2.0):
+        if app.recorder.active or app._busy.locked() or app.paused:
+            continue
+        interval = keep_warm_interval()
+        if interval <= 0 or time.time() - last < interval:
+            continue
+        keep_warm_once(app.server)
+        last = time.time()
+
+
 # ---- run at login ---------------------------------------------------------
 _RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 _RUN_NAME = "Nemo"
 
 
 def startup_get():
-    """The current HKCU Run value for Nemo, or None."""
+    """The current login entry for Nemo, or None."""
+    if sys.platform == "darwin":
+        from nemo_platform.macos.login import startup_get as _get
+        return _get()
     try:
         import winreg
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY) as k:
@@ -835,6 +1054,9 @@ def startup_get():
 
 
 def startup_set(on: bool) -> tuple[bool, str]:
+    if sys.platform == "darwin":
+        from nemo_platform.macos.login import startup_set as _set
+        return _set(on)
     try:
         import winreg
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY, 0,
@@ -864,6 +1086,8 @@ class Nemo:
         self._busy = threading.Lock()
         self.history: collections.deque[str] = collections.deque(maxlen=10)
         self._paused = threading.Event()
+        self._needs_reopen = False
+        self._last_take_at = time.time()
 
     @property
     def paused(self) -> bool:
@@ -878,10 +1102,10 @@ class Nemo:
             if self.recorder.active:
                 self.recorder.cancel()
                 self._state("hidden")
-            log("paused: Right Alt passes through, nothing is transcribed")
+            log(f"paused: {hotkey_label()} passes through, nothing is transcribed")
         else:
             self._paused.clear()
-            log("resumed: hold Right Alt to talk")
+            log(f"resumed: hold {hotkey_label()} to talk")
         return self.paused
 
     def toggle_pause(self) -> bool:
@@ -910,6 +1134,9 @@ class Nemo:
             # transcribe two things into one paste
             log("previous utterance still processing; press ignored")
             return
+        if self._needs_reopen:
+            self._verify_mic()
+            self._needs_reopen = False
         try:
             on_level = self.overlay.level if self.overlay else None
             self.recorder.start(self.device, on_level)
@@ -946,18 +1173,46 @@ class Nemo:
         else:
             self.press()
 
+    def _verify_mic(self) -> bool:
+        """Reopen the device and confirm it can be opened. Called after digital
+        silence or a wake, before the next press is allowed to fail the same way."""
+        log("reopening microphone")
+        try:
+            probe = Recorder()
+            probe.start(self.device)
+            time.sleep(0.08)
+            pcm = probe.stop()
+            peak = 0.0
+            if pcm is not None and len(pcm):
+                peak = float(np.abs(pcm.astype(np.int32)).max()) / 32768.0
+            log(f"mic reopened (probe peak {peak:.4f})")
+            return True
+        except Exception as exc:
+            log(f"mic reopen failed: {exc}")
+            return False
+
     def _finish(self, pcm: np.ndarray | None) -> None:
         if pcm is None or len(pcm) < SAMPLE_RATE * MIN_SECONDS:
-            log("too short, ignored")
+            dur = 0.0 if pcm is None else len(pcm) / SAMPLE_RATE
+            log(f"too short ({dur:.2f}s), ignored")
             self._state("hidden")
             return
         peak = float(np.abs(pcm.astype(np.int32)).max()) / 32768.0
-        if peak < MIN_PEAK:
-            log(f"too quiet (peak {peak:.4f}), ignored")
+        if peak < float(SILENT_PEAK):
+            log(f"no mic audio (peak {peak:.4f}, silent {float(SILENT_PEAK):.4f})")
+            self._needs_reopen = True
+            self._state("alert:No mic audio")
+            beep("error")
+            return
+        gate = effective_min_peak()
+        if peak < gate:
+            log(f"too quiet (peak {peak:.4f}, gate {gate:.4f})")
             self._state("error")
             beep("error")
             return
-        if not self.server.ensure():
+        need = audio_context_frames(pcm) if sys.platform == "darwin" else None
+        if not self.server.ensure(ac=need):
+            log("server did not become ready")
             self._state("error")
             beep("error")
             return
@@ -971,11 +1226,13 @@ class Nemo:
             return
         text = clean(raw)
         elapsed = (time.perf_counter() - t0) * 1000
+        seconds = len(pcm) / SAMPLE_RATE
         if not text:
-            log(f"audio {len(pcm)/SAMPLE_RATE:.1f}s -> {elapsed:.0f}ms: ''")
+            log(f"audio {seconds:.1f}s -> {elapsed:.0f}ms peak={peak:.4f}: ''")
             self._state("error")
             beep("error")
             return
+        record_peak(peak)
         self.history.append(text)
         if PASTE:
             paste(text)
@@ -986,8 +1243,13 @@ class Nemo:
         # Report the whole path, not just the server call: the output half is a
         # real part of what he feels and it used to be invisible in the log.
         total = (time.perf_counter() - t0) * 1000
-        log(f"audio {len(pcm)/SAMPLE_RATE:.1f}s -> {elapsed:.0f}ms "
-            f"+{total - elapsed:.0f}ms out = {total:.0f}ms: {text!r}")
+        ctx_note = f" win={self.server.ac}" if sys.platform == "darwin" else ""
+        log(f"audio {seconds:.1f}s{ctx_note} -> {elapsed:.0f}ms "
+            f"+{total - elapsed:.0f}ms out = {total:.0f}ms peak={peak:.4f}: {text!r}")
+        idle = time.time() - self._last_take_at
+        self._last_take_at = time.time()
+        if total > SLOW_MS:
+            log(f"slow take: {total:.0f}ms after {idle:.0f}s idle")
         self._state("done")
         beep("done")
 
@@ -1002,14 +1264,15 @@ class Nemo:
 def run_listener(app: Nemo):
     """Install the keyboard hook.
 
-    On Windows the low-level hook (win32_event_filter) is the authority: it sees
-    Right Alt before anything else, can swallow it, and does not depend on
-    pynput's key-name mapping. Work is handed to a worker thread because the hook
-    callback must return within a few hundred ms or Windows drops the hook.
-
-    suppress_event() also stops pynput's on_press/on_release for that event, so
-    the toggle has to be driven from the hook itself.
+    On macOS this is a CGEventTap, not pynput. The Windows path is unchanged.
     """
+    if sys.platform == "darwin":
+        from nemo_platform.macos.hotkey import install
+        push = str(DICTATION_MODE).strip().lower() != "toggle"
+        return install(app, suppress=bool(SUPPRESS_HOTKEY), push=push, log=log)
+
+    # Windows: low-level hook. suppress_event() also stops pynput's own callbacks,
+    # so the action is driven from the hook, off-thread.
     from pynput import keyboard
 
     holder: dict = {}
@@ -1062,8 +1325,14 @@ def run_listener(app: Nemo):
 # ---- what the app says about itself ---------------------------------------
 def engine_phrase(info: dict) -> str:
     """One line describing the accelerator, from a backend()/probe_backend() dict."""
-    if info.get("accelerator") == "Vulkan":
-        return f"GPU: {info['device']} (Vulkan)"
+    if info.get("accelerator") in ("Vulkan", "Metal"):
+        acc = info["accelerator"]
+        dev = info.get("device") or ""
+        if dev in ("", "GPU"):
+            # The -h probe sees the backend but not the device name; only a
+            # running server prints "found device:". Say what is known.
+            return f"GPU ({acc})"
+        return f"GPU: {dev} ({acc})"
     if info.get("accelerator") == "CPU":
         return info["device"] or "CPU only"
     return info.get("device") or "backend unknown"
@@ -1082,7 +1351,8 @@ def probe_backend(timeout: float = 20.0) -> dict:
                 "device": f"engine binary missing: {SERVER_EXE}"}
     try:
         out = subprocess.run(
-            [str(SERVER_EXE), "-h"], cwd=str(BIN), timeout=timeout,
+            [str(SERVER_EXE), "-h"], cwd=str(BIN) if BIN.exists() else None,
+            timeout=60 if sys.platform == "darwin" else timeout,
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             creationflags=0x08000000 if os.name == "nt" else 0,
         )
@@ -1092,7 +1362,7 @@ def probe_backend(timeout: float = 20.0) -> dict:
     for line in text.splitlines():
         probe._absorb(line.rstrip())
     if probe._gpu_loaded:
-        return {"ready": True, "accelerator": "Vulkan",
+        return {"ready": True, "accelerator": probe._accel or "Vulkan",
                 "device": probe._gpu_device or "GPU"}
     if probe._cpu_backend:
         return {"ready": True, "accelerator": "CPU",
@@ -1116,7 +1386,8 @@ def status_report(verify: bool = False) -> int:
         note = ""
     emit(f"{'engine':12s} : {engine_phrase(info)}{note}")
     emit(f"{'endpoint':12s} : http://127.0.0.1:{PORT} (loopback only)")
-    emit(f"{'privacy':12s} : audio never leaves this PC; the only outbound call is --fetch-model")
+    where = "Mac" if sys.platform == "darwin" else "PC"
+    emit(f"{'privacy':12s} : audio never leaves this {where}; the only outbound call is --fetch-model")
 
     if MODEL.exists():
         mb = MODEL.stat().st_size / 1e9
@@ -1158,11 +1429,15 @@ def status_report(verify: bool = False) -> int:
     emit(f"{'microphone':12s} : {MIC_DEVICE!r} -> {dev_name}")
 
     hold = str(DICTATION_MODE).strip().lower() != "toggle"
-    emit(f"{'hotkey':12s} : Right Alt, {'hold to talk (push)' if hold else 'tap to toggle'}"
+    chord = "Command-V" if sys.platform == "darwin" else "Ctrl+V"
+    emit(f"{'hotkey':12s} : {hotkey_label()}, {'hold to talk (push)' if hold else 'tap to toggle'}"
          f"{', swallowed' if SUPPRESS_HOTKEY else ', passed through'}")
     emit(f"{'output':12s} : "
-         f"{'clipboard + Ctrl+V' if PASTE else 'clipboard only'}"
+         f"{'clipboard + ' + chord if PASTE else 'clipboard only'}"
          f"{', trailing space' if TRAILING_SPACE else ''}")
+    emit(f"{'mic gate':12s} : {effective_min_peak():.4f}"
+         f" ({'learned' if len(_load_peaks()) >= GATE_MIN_SAMPLES else 'constant'}"
+         f", {len(_load_peaks())} takes)")
     return 0
 
 
@@ -1177,8 +1452,10 @@ def describe_engine(server: "Server") -> list:
     info = server.backend()
     if not info.get("ready"):
         engine = "Engine: starting..."
-    elif info["accelerator"] == "Vulkan":
-        engine = f"GPU: {info['device']} (Vulkan)"
+    elif info["accelerator"] in ("Vulkan", "Metal"):
+        acc = info["accelerator"]
+        dev = info.get("device") or ""
+        engine = f"GPU ({acc})" if dev in ("", "GPU") else f"GPU: {dev} ({acc})"
     elif info["accelerator"] == "CPU":
         engine = info["device"] or "CPU only"
     else:
@@ -1193,8 +1470,7 @@ def describe_engine(server: "Server") -> list:
 
     # The claim worth making, and the one a user can check: the audio goes to a
     # loopback port answered by a process on this machine, and nowhere else.
-    privacy = "Local only: audio never leaves this PC"
-    return [engine, model, privacy]
+    return [engine, model, privacy_line()]
 
 
 def main() -> int:
@@ -1291,12 +1567,14 @@ def main() -> int:
         emit(f"captured {len(pcm)/SAMPLE_RATE:.2f}s  peak={peak:.4f}  rms={rms:.4f}")
         if peak < MIN_PEAK:
             print("!! level below MIN_PEAK - pick another mic with --device", file=sys.stderr)
-        if not server.ensure():
+        need = audio_context_frames(pcm) if sys.platform == "darwin" else None
+        if not server.ensure(ac=need):
             print("whisper server failed to start", file=sys.stderr)
             return 1
         t0 = time.perf_counter()
         try:
-            text = clean(server.transcribe(pcm_to_wav(pcm), vocabulary_prompt()))
+            text = clean(server.transcribe(
+                pcm_to_wav(pcm), vocabulary_prompt()))
         finally:
             server.shutdown()
         emit(f"[{(time.perf_counter()-t0)*1000:.0f} ms] {text!r}")
@@ -1305,7 +1583,17 @@ def main() -> int:
     if args.file:
         wav = Path(args.file).read_bytes()
         t0 = time.perf_counter()
-        if not server.ensure():
+        need = None
+        if sys.platform == "darwin":
+            try:
+                with wave.open(str(args.file), "rb") as wf:
+                    frames = wf.getnframes()
+                    rate = wf.getframerate() or SAMPLE_RATE
+                need = max(128, min(1500,
+                                    (int(frames * SAMPLE_RATE / rate) + 319) // 320 + 32))
+            except Exception:
+                need = None
+        if not server.ensure(ac=need):
             print("whisper server failed to start", file=sys.stderr)
             return 1
         try:
@@ -1316,6 +1604,19 @@ def main() -> int:
         if args.once and text:
             paste(text)
         return 0
+
+    if sys.platform == "darwin":
+        from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
+        from nemo_platform.macos.permissions import (
+            accessibility_trusted, request_microphone, running_identity,
+        )
+        from nemo_platform.macos.power import begin_activity
+        NSApplication.sharedApplication().setActivationPolicy_(
+            NSApplicationActivationPolicyAccessory)
+        begin_activity()
+        if not accessibility_trusted(prompt=True):
+            emit(f"Accessibility is not granted. Tick: {running_identity()}")
+        request_microphone()
 
     overlay = None
     if Overlay is None:
@@ -1348,7 +1649,7 @@ def main() -> int:
     # in the overflow - without this, someone finishes onboarding with an icon they
     # cannot see and no idea what to press.
     if overlay and not ONBOARD_MARK.exists():
-        overlay.state("hint:Hold Right Alt to talk")
+        overlay.state(f"hint:Hold {hotkey_label()} to talk")
         log("first run: showing the hotkey hint")
         try:
             ONBOARD_MARK.write_text("shown\n", encoding="utf-8")
@@ -1359,11 +1660,16 @@ def main() -> int:
     # during that window should queue behind ensure() rather than be dropped
     # because no listener existed yet.
     listener = run_listener(app)
-    log(f"{APP_NAME} {APP_VERSION} listening: "
-        f"{'hold' if str(DICTATION_MODE).lower() != 'toggle' else 'tap'} right Alt "
+    gesture = "hold" if str(DICTATION_MODE).lower() != "toggle" else "tap"
+    log(f"{APP_NAME} {APP_VERSION} listening: {gesture} {hotkey_label()} "
         f"to talk, Esc to cancel (device={device})")
-    emit(f"{APP_NAME} {APP_VERSION} running - "
-         f"{'hold' if str(DICTATION_MODE).lower() != 'toggle' else 'tap'} Right Alt to talk.")
+    emit(f"{APP_NAME} {APP_VERSION} running - {gesture} {hotkey_label()} to talk.")
+    need_perms = False
+    if sys.platform == "darwin" and getattr(listener, "failed", False):
+        from nemo_platform.macos.permissions import running_identity
+        need_perms = True
+        emit(listener.failure)
+        emit(f"grant Accessibility to: {running_identity()}")
 
     if not server.ensure():
         log("warning: whisper server did not start; first use will retry")
@@ -1396,16 +1702,49 @@ def main() -> int:
             paste(t)
             return True
 
-        tray = Tray(version=APP_VERSION, root=ROOT,
-                    startup_get=startup_get, startup_set=startup_set,
-                    on_reload=do_reload,
-                    on_copy_last=copy_last, on_insert_last=insert_last,
-                    last_preview=app.last_text,
-                    is_paused=lambda: app.paused,
-                    on_toggle_pause=app.toggle_pause,
-                    on_say=app.say,
-                    status_lines=status_lines,
-                    icon_path=ROOT / "nemo.png", log=log)
+        tray_kwargs = dict(
+            version=APP_VERSION, root=DATA if sys.platform == "darwin" else ROOT,
+            startup_get=startup_get, startup_set=startup_set,
+            on_reload=do_reload,
+            on_copy_last=copy_last, on_insert_last=insert_last,
+            last_preview=app.last_text,
+            is_paused=lambda: app.paused,
+            on_toggle_pause=app.toggle_pause,
+            on_say=app.say,
+            status_lines=status_lines,
+            icon_path=ROOT / "nemo.png", log=log,
+        )
+        if sys.platform == "darwin":
+            tray_kwargs["hotkey_name"] = hotkey_label()
+            if need_perms:
+                def ask_permissions() -> None:
+                    from nemo_platform.macos.dialog import explain_permissions
+                    from nemo_platform.macos.permissions import (
+                        open_settings, running_identity,
+                    )
+                    which = explain_permissions(["Accessibility"], running_identity())
+                    if which:
+                        open_settings(which)
+                tray_kwargs["on_ready"] = ask_permissions
+        tray = Tray(**tray_kwargs)
+
+    stop_warm = threading.Event()
+    warm_thread = None
+    wake_observer = None
+    if sys.platform == "darwin":
+        from nemo_platform.macos.power import watch_wake
+
+        def on_wake() -> None:
+            log("wake: rechecking mic and tap")
+            if hasattr(listener, "reenable"):
+                listener.reenable()
+            app._needs_reopen = True
+            threading.Thread(target=lambda: keep_warm_once(server), daemon=True).start()
+
+        wake_observer = watch_wake(on_wake)
+        warm_thread = threading.Thread(
+            target=keep_warm_loop, args=(app, stop_warm), name="keep-warm", daemon=True)
+        warm_thread.start()
 
     try:
         if tray is not None:
@@ -1421,6 +1760,7 @@ def main() -> int:
         except KeyboardInterrupt:
             pass
     finally:
+        stop_warm.set()
         listener.stop()
         app.recorder.cancel()
         if tray is not None:

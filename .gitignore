@@ -19,6 +19,7 @@ vocabulary.txt
 
 # machine-local state: written after the first successful start
 .onboarded
+mic_levels.json
 
 # logs and build droppings
 *.log

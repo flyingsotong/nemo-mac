@@ -1,0 +1,17 @@
+# macOS runtime. The Windows requirements.txt stays as it is: pyobjc does not
+# install there, and pynput / pystray / pyperclip are not used on the Mac.
+#
+#   python3 -m venv .venv
+#   .venv/bin/pip install -r requirements-macos.txt
+
+numpy==2.5.4
+pillow==13.0.0
+sounddevice==0.5.6
+
+pyobjc-framework-Cocoa
+pyobjc-framework-Quartz
+pyobjc-framework-AVFoundation
+pyobjc-framework-ApplicationServices
+
+# build only
+pyinstaller==6.22.3
