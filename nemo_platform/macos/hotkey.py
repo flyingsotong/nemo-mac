@@ -1,10 +1,11 @@
-"""Right Option, swallowed, via a session event tap.
+"""The push-to-talk key, swallowed, via a session event tap.
 
-Option is a modifier, so the press and the release arrive as flagsChanged, not
-keyDown. Left and right are distinguished by key code (58 and 61 on an ANSI
-keyboard) and by the device-dependent flag bits. Work never happens inside the
-callback: a slow tap is disabled by the system, which is the "hotkey died until
-restart" bug.
+The key is a modifier, so the press and the release arrive as flagsChanged, not
+keyDown. Left and right are distinguished by key code (58/61 for Option, 55/54 for
+Command on an ANSI keyboard) and by the device-dependent flag bits; the spec warns
+that either mechanism may be the reliable one on a given keyboard, so both are
+consulted. Work never happens inside the callback: a slow tap is disabled by the
+system, which is the "hotkey died until restart" bug.
 """
 from __future__ import annotations
 
@@ -13,19 +14,26 @@ from typing import Callable
 
 import Quartz
 
-RIGHT_OPTION = 61
-LEFT_OPTION = 58
 ESCAPE = 53
 
-# NX_DEVICELALTKEYMASK / NX_DEVICERALTKEYMASK. The standard modifier mask does
-# not tell left from right; these bits do, and the key code is the cleaner test.
-_DEV_LALT = 0x00000020
-_DEV_RALT = 0x00000040
+# name -> (right keycode, left keycode, right device bit, left device bit, modifier mask)
+# The device bits are NX_DEVICER*KEYMASK. The standard modifier mask cannot tell
+# left from right; these can, and the key code is the cleaner test.
+HOTKEYS = {
+    "right_command": (54, 55, 0x00000010, 0x00000008, 0x00100000),
+    "right_option": (61, 58, 0x00000040, 0x00000020, 0x00080000),
+}
+DEFAULT_HOTKEY = "right_command"
 
 _DISABLED = {
     int(getattr(Quartz, "kCGEventTapDisabledByTimeout", 0xFFFFFFFE)) & 0xFFFFFFFF,
     int(getattr(Quartz, "kCGEventTapDisabledByUserInput", 0xFFFFFFFF)) & 0xFFFFFFFF,
 }
+
+
+def spec(name: str):
+    """Resolve a configured hotkey name, falling back rather than crashing."""
+    return HOTKEYS.get(str(name or "").strip().lower(), HOTKEYS[DEFAULT_HOTKEY])
 
 
 def _keycode(event) -> int:
@@ -42,7 +50,8 @@ class TapListener:
     def __init__(self, on_press: Callable[[], None], on_release: Callable[[], None],
                  on_escape: Callable[[], None], on_paused_press: Callable[[], None],
                  is_paused: Callable[[], bool], is_recording: Callable[[], bool],
-                 suppress: bool, log: Callable[[str], None]) -> None:
+                 suppress: bool, log: Callable[[str], None],
+                 hotkey: str = DEFAULT_HOTKEY) -> None:
         self._on_press = on_press
         self._on_release = on_release
         self._on_escape = on_escape
@@ -51,6 +60,8 @@ class TapListener:
         self._is_recording = is_recording
         self._suppress = suppress
         self._log = log
+        self._right_kc, self._left_kc, self._right_bit, self._left_bit, self._mask = spec(hotkey)
+        self._hotkey = hotkey
         self._down = False
         self._seen_modifier = False
         self._tap = None
@@ -120,22 +131,22 @@ class TapListener:
         flags = _flags(event)
         if not self._seen_modifier:
             # One line, once, so a "hotkey does nothing" report carries its own
-            # diagnosis: which key code, and whether the device-specific right
-            # Option bit is present on this keyboard.
+            # diagnosis: which key code, and whether the device-specific right-key
+            # bit is present on this keyboard.
             self._seen_modifier = True
             self._log(f"modifier event: keycode={kc} flags=0x{flags:08x} "
-                      f"devR={'yes' if flags & _DEV_RALT else 'no'}")
+                      f"devR={'yes' if flags & self._right_bit else 'no'}")
         # Identify the key by code, and accept the device bit as a second opinion:
         # Section 8.2 of the build spec warns that either may be the reliable one
         # on a given keyboard, and the two agree on an ANSI layout.
-        if kc == RIGHT_OPTION:
-            now_down = bool(flags & _DEV_RALT)
-            if (not now_down and not (flags & _DEV_LALT)
-                    and (flags & Quartz.kCGEventFlagMaskAlternate)):
+        if kc == self._right_kc:
+            now_down = bool(flags & self._right_bit)
+            if (not now_down and not (flags & self._left_bit)
+                    and (flags & self._mask)):
                 now_down = True     # device bit absent; the key code told us
-        elif kc == LEFT_OPTION and (flags & _DEV_RALT):
-            now_down = True         # bits say right Option even though the code says left
-        elif kc == LEFT_OPTION and self._down:
+        elif kc == self._left_kc and (flags & self._right_bit):
+            now_down = True         # bits say the right-hand key, code says left
+        elif kc == self._left_kc and self._down:
             now_down = False        # the release for that odd case; must clear the latch
         else:
             return event
@@ -195,13 +206,13 @@ class TapListener:
         self._tap = tap
         self._source = source
         self._loop = loop
-        self._log("event tap installed (Right Option)")
+        self._log(f"event tap installed ({self._hotkey.replace('_', ' ').title()})")
         self._ready.set()
         Quartz.CFRunLoopRun()
         self._log("event tap stopped")
 
 
-def install(app, suppress: bool, push: bool, log) -> TapListener:
+def install(app, suppress: bool, push: bool, log, hotkey: str = DEFAULT_HOTKEY) -> TapListener:
     """Wire the tap to the app. Push-to-talk is the default; toggle is the option."""
 
     def on_press() -> None:
@@ -225,6 +236,7 @@ def install(app, suppress: bool, push: bool, log) -> TapListener:
         is_recording=lambda: app.recorder.active,
         suppress=suppress,
         log=log,
+        hotkey=hotkey,
     )
     listener.start()
     return listener

@@ -10,7 +10,7 @@ cloud, no telemetry.
 ## On a Mac
 
 The macOS build is on the `macos` branch and has its own manual:
-**[MACOS.md](MACOS.md)**. Same app, different key — hold **Right Option**, not Right
+**[MACOS.md](MACOS.md)**. Same app, different key — hold **Right Command**, not Right
 Alt — with a Metal engine, an AppKit pill and a menu-bar item. It needs
 `brew install whisper.cpp` and `./build.sh`. Windows users need nothing from that
 file.

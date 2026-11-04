@@ -111,7 +111,7 @@ def main() -> int:
 
         # --- text out ------------------------------------------------------
         ok &= check("hotkey is named for the platform",
-                    nemo.hotkey_label() == ("Right Option" if sys.platform == "darwin" else "Right Alt"))
+                    nemo.hotkey_label() == ("Right Command" if sys.platform == "darwin" else "Right Alt"))
         ok &= check("privacy line names the platform",
                     ("Mac" in nemo.privacy_line()) == (sys.platform == "darwin"))
 

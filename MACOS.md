@@ -1,6 +1,6 @@
 # Nemo on macOS
 
-Hold **Right Option**, speak, release. The text appears where the cursor is.
+Hold **Right Command**, speak, release. The text appears where the cursor is.
 Offline: audio goes to a whisper server on `127.0.0.1:8129` and nowhere else.
 
 This is the macOS build of [Nemo](README.md). The Windows build is the reference;
@@ -39,7 +39,8 @@ The `.app` is only the conductor. The engine binary is Homebrew's.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `SUPPRESS_HOTKEY` | `true` | swallow Right Option; `false` lets it through |
+| `HOTKEY` | `"right_command"` | `right_command` or `right_option`; which key talks |
+| `SUPPRESS_HOTKEY` | `true` | swallow the hotkey; `false` lets it through |
 | `DICTATION_MODE` | `"push"` | `"toggle"` for tap to start, tap to stop |
 | `LANGUAGE` | `"en"` | `""` to auto-detect |
 | `MODEL_FILE` | `ggml-large-v3-turbo.bin` | which file in `models/` |
@@ -152,7 +153,7 @@ genuinely doing the work; the bottle is not the bottleneck (a native source
 build measured *slower*, 650 ms).
 
 Release-to-paste, driven end to end through the microphone with the clipboard as
-the only output (speaker playback, synthetic Right Option, so the timing excludes
+the only output (speaker playback, synthetic hotkey, so the timing excludes
 human key travel and the paste keystroke):
 
 | Take | Audio | Engine | Output | Total | Peak |
@@ -191,9 +192,10 @@ cannot quietly change what the app promises:
 .venv/bin/python scripts/test_core_logic.py     # gate, loop detection, window, filter, vocabulary
 ```
 
-`test_hotkey_logic.py` asserts the central promise directly: Right Option is
-swallowed while running, reaches the app while paused, is never swallowed with
-`SUPPRESS_HOTKEY: false`, left Option is never touched, and Escape is observed but
+`test_hotkey_logic.py` asserts the central promise directly and for both
+supported keys: the right-hand key is swallowed while running, reaches the app
+while paused, is never swallowed with `SUPPRESS_HOTKEY: false`, the left-hand key
+is never touched (so `⌘C` and `⌥e` still work), and Escape is observed but
 passed through.
 
 ## Recovery

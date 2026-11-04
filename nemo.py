@@ -47,7 +47,11 @@ APP_NAME = "Nemo"
 APP_VERSION = "0.2"
 
 # ---- knobs ----------------------------------------------------------------
-HOTKEY_VK = 0xA5          # Right Alt (VK_RMENU)
+HOTKEY_VK = 0xA5          # Windows: Right Alt (VK_RMENU)
+# macOS: which key is push-to-talk. right_command or right_option. Right Command
+# is the default because that is where the hand already is; either is one config
+# line away.
+HOTKEY = "right_command"
 SUPPRESS_HOTKEY = True    # stop Right Alt reaching the focused app (menus / AltGr)
 LANGUAGE = "en"           # set to "" for auto-detect
 THREADS = 4 if sys.platform == "darwin" else 6
@@ -115,7 +119,7 @@ if sys.platform == "darwin":
 _OVERRIDABLE = {"HOTKEY_VK", "SUPPRESS_HOTKEY", "LANGUAGE", "THREADS", "PORT",
                 "SAMPLE_RATE", "MIC_DEVICE", "MIN_SECONDS", "MIN_PEAK",
                 "PASTE", "BEEP", "OVERLAY", "DICTATION_MODE", "TRAILING_SPACE",
-                "MODEL_FILE", "KEEP_WARM_SEC", "SILENT_PEAK", "AUDIO_CTX"}
+                "MODEL_FILE", "KEEP_WARM_SEC", "SILENT_PEAK", "AUDIO_CTX", "HOTKEY"}
 
 
 def reload_config() -> bool:
@@ -908,7 +912,12 @@ def clean(text: str) -> str:
 
 
 def hotkey_label() -> str:
-    return "Right Option" if sys.platform == "darwin" else "Right Alt"
+    """The key's name in prose. Every message, tooltip and log line uses this, so
+    the app never tells someone to press a key it is not listening for."""
+    if sys.platform != "darwin":
+        return "Right Alt"
+    return {"right_option": "Right Option"}.get(
+        str(HOTKEY).strip().lower(), "Right Command")
 
 
 def privacy_line() -> str:
@@ -1383,7 +1392,8 @@ def run_listener(app: Nemo):
     if sys.platform == "darwin":
         from nemo_platform.macos.hotkey import install
         push = str(DICTATION_MODE).strip().lower() != "toggle"
-        return install(app, suppress=bool(SUPPRESS_HOTKEY), push=push, log=log)
+        return install(app, suppress=bool(SUPPRESS_HOTKEY), push=push, log=log,
+                       hotkey=HOTKEY)
 
     # Windows: low-level hook. suppress_event() also stops pynput's own callbacks,
     # so the action is driven from the hook, off-thread.

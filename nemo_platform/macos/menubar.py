@@ -94,7 +94,7 @@ class MenuBar:
                  on_reload, icon_path: Path, log,
                  on_copy_last=None, on_insert_last=None, last_preview=None,
                  is_paused=None, on_toggle_pause=None, on_say=None,
-                 status_lines=None, hotkey_name: str = "Right Option", on_ready=None):
+                 status_lines=None, hotkey_name: str = "Right Command", on_ready=None):
         self.version = version
         self.root = Path(root)
         self.startup_get = startup_get

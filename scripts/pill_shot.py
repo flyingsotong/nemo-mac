@@ -1,6 +1,6 @@
 """Show the pill in a given state, capture the screen, exit.
 
-Run:  .venv/bin/python scripts/pill_shot.py "hint:Hold Right Option to talk" /tmp/pill.png
+Run:  .venv/bin/python scripts/pill_shot.py "hint:Hold Right Command to talk" /tmp/pill.png
 Needs Screen Recording for the process, or the capture is a blank image.
 """
 from __future__ import annotations
@@ -18,7 +18,7 @@ from nemo_platform.macos.pill import PillWindow  # noqa: E402
 
 
 def main() -> int:
-    label = sys.argv[1] if len(sys.argv) > 1 else "hint:Hold Right Option to talk"
+    label = sys.argv[1] if len(sys.argv) > 1 else "hint:Hold Right Command to talk"
     out = Path(sys.argv[2] if len(sys.argv) > 2 else "/tmp/pill.png")
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)

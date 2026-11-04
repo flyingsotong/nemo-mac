@@ -3,7 +3,7 @@
 Run:  .venv/bin/python scripts/tap_spike.py [seconds]
 
 Prints whether the tap was created, then logs every event that reaches it:
-key code, flags, and whether it was swallowed. Hold Right Option to see it.
+key code, flags, and whether it was swallowed. Hold Right Command to see it.
 Needs Accessibility for the process that runs it.
 """
 from __future__ import annotations
@@ -37,7 +37,7 @@ def main() -> int:
     if listener.failed:
         print("FAILED:", listener.failure)
         return 2
-    print(f"tap live for {seconds:.0f}s — hold Right Option, then press Escape")
+    print(f"tap live for {seconds:.0f}s — hold Right Command, then press Escape")
     time.sleep(seconds)
     listener.stop()
     print("events:", COUNT)
