@@ -1,5 +1,7 @@
 # Nemo for Mac
 
+[![macOS tests](https://github.com/flyingsotong/nemo-mac/actions/workflows/macos-tests.yml/badge.svg)](https://github.com/flyingsotong/nemo-mac/actions/workflows/macos-tests.yml)
+
 Hold **Right Command**, speak, let go. The text appears where your cursor is, in
 about a third of a second, entirely on this machine. No account, no cloud, no
 telemetry, no history on disk.

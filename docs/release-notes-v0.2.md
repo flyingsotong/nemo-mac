@@ -4,15 +4,15 @@ Offline dictation for macOS: hold **Right Command**, speak, let go. Whisper runs
 Metal via a resident whisper-server, the text lands where your cursor is, and audio
 never leaves the machine.
 
-This is the macOS build. The Windows build is unchanged on `main`; the two share one
-core and differ only in the host layer, which lives in `nemo_platform/macos/`.
+The first release of this repository, split from
+[Nemo for Windows](https://github.com/flyingsotong/nemo) now that the two builds
+have their own install, their own key and their own release cadence.
 
 ## Install
 
 ```sh
 brew install whisper.cpp          # the Metal engine; not bundled
-git clone https://github.com/flyingsotong/nemo && cd nemo
-git checkout macos
+git clone https://github.com/flyingsotong/nemo-mac && cd nemo-mac
 ./build.sh                        # builds and signs dist/Nemo.app
 open dist/Nemo.app
 ```
