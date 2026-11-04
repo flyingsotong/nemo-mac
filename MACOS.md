@@ -96,6 +96,38 @@ Measured on this machine, not assumed:
    Whisper's full 32-layer encoder: 490 ms on Metal for the 30 s window against
    100 ms for `small.en`. That is why `AUDIO_CTX` exists.
 
+## Cost of being idle
+
+The spec asks whether a hidden app is indistinguishable from not running. Measured
+with `ps` over 90 s with the pill hidden and one keep-warm in the window:
+
+| Process | CPU time | Share of one core | Resident |
+|---|---|---|---|
+| `Nemo` | 0.20 s / 90 s | ~0.2% | 105 MB, unchanged |
+| `whisper-server` | 0.33 s / 90 s | ~0.4% | 1.8 GB, unchanged |
+
+Extrapolated, that is single-digit seconds of CPU per hour, of which most is the
+keep-warm inference (one every 300 s on AC, stretched on battery). The pill runs
+no timer while hidden, which is the design the spec asked for, and both
+resident sizes were identical at both samples, so nothing is drifting.
+
+`powermetrics` would give joules rather than CPU time, but it needs root; these
+numbers are the honest proxy, not the spec's ideal.
+
+## Pill frame cost
+
+`render()` measured at 30 Hz over 120 frames:
+
+| Scale | Median | p90 |
+|---|---|---|
+| 1x (Windows equivalent) | 0.55 ms | 0.63 ms |
+| 2x (this Retina display) | 2.08 ms | 2.26 ms |
+
+The spec's target is under 2 ms; at 2x it is just over, against 1.69 ms on
+Windows at 1x. That is 6% of one core while the pill is visible, which is the only
+time it renders, so it has not been optimised further — the visible cost is about
+one second per dictation.
+
 ## Measured here
 
 Turbo, Metal, warm server, HTTP round trip:
