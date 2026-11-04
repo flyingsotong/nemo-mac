@@ -7,13 +7,21 @@ cloud, no telemetry.
 
 ![Nemo](docs/social-preview.png)
 
-## On a Mac
+## Two builds
 
-The macOS build is on the `macos` branch and has its own manual:
-**[MACOS.md](MACOS.md)**. Same app, different key — hold **Right Command**, not Right
-Alt — with a Metal engine, an AppKit pill and a menu-bar item. It needs
-`brew install whisper.cpp` and `./build.sh`. Windows users need nothing from that
-file.
+| | Nemo for Windows | Nemo for Mac |
+|---|---|---|
+| Hotkey | hold Right Alt | hold Right Command |
+| Engine | whisper.cpp on Vulkan, `ggml` overlaid from llama.cpp | whisper.cpp on Metal, straight from Homebrew |
+| Surface | tray icon, layered-window pill | menu bar item, Liquid Glass pill |
+| Install | the release zip, nothing to build | `brew install whisper.cpp` then `./build.sh` |
+| Manual | this file | **[MACOS.md](MACOS.md)** |
+
+They share one core — the pipeline, cleaning, vocabulary, model fetching, silence
+gate, log and renderer — which is why they are one repository with
+`nemo_platform/macos/` beside the Windows modules rather than two projects that
+drift apart. The macOS work lives on the `macos` branch until the Windows build has
+had a smoke test against the shared changes.
 
 ## Installing
 

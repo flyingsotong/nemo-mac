@@ -1,4 +1,4 @@
-# Nemo on macOS
+# Nemo for Mac
 
 Hold **Right Command**, speak, release. The text appears where the cursor is.
 Offline: audio goes to a whisper server on `127.0.0.1:8129` and nowhere else.
