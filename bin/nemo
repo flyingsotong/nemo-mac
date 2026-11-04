@@ -1,2 +1,0 @@
-#!/bin/sh
-exec "/Users/alansoon/github-projects/nemo/dist/Nemo.app/Contents/MacOS/Nemo" "$@"

@@ -3,7 +3,11 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-IDENTITY="${IDENTITY:-Apple Development: Alan Soon (KF8DGTVPW3)}"
+# Signing identity. Ad-hoc ("-") works and needs no certificate, but macOS keys
+# Accessibility and microphone grants to a code identity, so a stable identity
+# means those grants survive a rebuild instead of being re-prompted each time:
+#   IDENTITY="Developer ID Application: Your Name (TEAMID)" ./build.sh
+IDENTITY="${IDENTITY:--}"
 APP="dist/Nemo.app"
 
 echo "==> virtualenv"
@@ -54,7 +58,7 @@ if ! command -v whisper-server >/dev/null; then
   echo "!! whisper-server not found: brew install whisper.cpp" >&2
 fi
 
-echo "==> sign (no hardened runtime: not notarising, and it fights PyInstaller's dylibs)"
+echo "==> sign as $IDENTITY (no hardened runtime: not notarising, and it fights PyInstaller's dylibs)"
 codesign --force --deep --sign "$IDENTITY" "$APP"
 
 echo "==> wrapper"
