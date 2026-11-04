@@ -1,70 +1,37 @@
 # Third-party notices
 
-Nemo itself is MIT licensed; see `LICENSE`. It bundles other people's work, and
-those components keep their own licences. This file lists them.
+Nemo for Mac is MIT licensed; see `LICENSE`. It uses other people's work, and
+those components keep their own licences.
 
-## Bundled executables and libraries (`bin-vk\`)
+There are **no LGPL dependencies** in this build, because the two that existed in
+the Windows version have native replacements: the hotkey is a `CGEventTap` instead
+of `pynput`, and the menu bar item is an `NSStatusItem` instead of `pystray`.
+
+## The engine — installed, not redistributed
 
 | Component | Licence | Source |
 |---|---|---|
-| whisper.cpp (`whisper-server.exe`, `whisper.dll`) | MIT | https://github.com/ggerganov/whisper.cpp |
-| llama.cpp (`ggml.dll`, `ggml-base.dll`, `ggml-vulkan.dll`, `ggml-cpu-*.dll`, `libomp.dll`) | MIT | https://github.com/ggerganov/llama.cpp |
+| whisper.cpp (`whisper-server`, `whisper-cli`, `libwhisper`) | MIT | <https://github.com/ggerganov/whisper.cpp> |
+| ggml | MIT | <https://github.com/ggml-org/ggml> |
 
-The ggml libraries are llama.cpp's build substituted for whisper.cpp's, because
-whisper.cpp publishes no Vulkan Windows build. Both projects are MIT and share the
-same ggml ABI; see `RECORD.md` for how the import surface was verified.
+`build.sh` does not bundle the engine: `whisper-server` links `libwhisper` and the
+ggml dylibs by `@rpath`, so a copy inside a `.app` cannot load without
+`install_name_tool` over the whole dependency tree. `brew install whisper.cpp`
+installs it instead, and Nemo depends on it at runtime.
 
-## Python packages compiled into `Nemo.exe`
+## Python packages in `Nemo.app`
 
-| Package | Version | Licence |
+| Package | Licence | Source |
 |---|---|---|
-| Python | 3.13 | PSF-2.0 |
-| numpy | 2.5.4 | BSD-3-Clause |
-| Pillow | 13.0.0 | MIT-CMU |
-| sounddevice | 0.5.6 | MIT |
-| pyperclip | 1.11.0 | BSD |
-| six | 1.17 | MIT |
-| **pynput** | 1.8.2 | **LGPLv3** |
-| **pystray** | 0.19.5 | **LGPLv3** |
-| PyInstaller (build tool only) | 6.22.3 | GPLv2 with the bootloader exception, which explicitly permits distributing non-free bundled programs |
-
-### On the two LGPLv3 components
-
-`pynput` (keyboard hook and the Ctrl+V keystroke) and `pystray` (the tray icon) are
-LGPLv3, not MIT. They are redistributed **unmodified**. The LGPL asks that a
-recipient be able to replace them, so this repository ships the whole build:
-
-- `requirements.txt` pins the exact versions.
-- `build.ps1` reproduces the packaged exe.
-
-Rebuilding with a modified `pynput` or `pystray` produces a working `Nemo.exe`, which
-is the relinking route the licence describes. If that is not sufficient for your
-jurisdiction, build with `--onedir` instead of `--onefile` and the modules can be
-swapped in the output directory directly.
-
-Source for both: https://github.com/moses-palmer/pynput and
-https://github.com/moses-palmer/pystray.
+| Python | PSF-2.0 | <https://python.org> |
+| numpy | BSD-3-Clause | <https://numpy.org> |
+| Pillow | MIT-CMU | <https://python-pillow.org> |
+| sounddevice | MIT | <https://python-sounddevice.readthedocs.io> |
+| pyobjc (Cocoa, Quartz, AVFoundation, ApplicationServices) | MIT | <https://pyobjc.readthedocs.io> |
+| PyInstaller (build tool only) | GPLv2 with the bootloader exception, which permits distributing non-free bundled programs | <https://pyinstaller.org> |
 
 ## The speech model
 
-Not distributed with Nemo. `--fetch-model` downloads it from
-https://huggingface.co/ggerganov/whisper.cpp, and the ggml conversions there are the
+Not distributed here. `--fetch-model` downloads it from
+<https://huggingface.co/ggerganov/whisper.cpp>, and those ggml conversions are the
 MIT-licensed OpenAI Whisper weights.
-
-## The macOS build
-
-The Mac build has **no LGPL dependencies**, because the two that existed on Windows
-have native replacements: the hotkey is a `CGEventTap` instead of `pynput`, and the
-tray icon is an `NSStatusItem` instead of `pystray`. Neither is used or shipped.
-
-| Component | Licence | Source |
-|---|---|---|
-| whisper.cpp (installed by Homebrew, **not redistributed**) | MIT | https://github.com/ggerganov/whisper.cpp |
-| numpy | BSD-3-Clause | https://numpy.org |
-| Pillow | MIT-CMU | https://python-pillow.org |
-| sounddevice | MIT | https://python-sounddevice.readthedocs.io |
-| pyobjc (Cocoa, Quartz, AVFoundation, ApplicationServices) | MIT | https://pyobjc.readthedocs.io |
-| PyInstaller (build tool only) | GPLv2 with the bootloader exception | https://pyinstaller.org |
-
-The engine is installed with Homebrew rather than bundled, so the `.app` that
-`build.sh` produces depends on it at runtime and does not redistribute it.

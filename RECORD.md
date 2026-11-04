@@ -1,3 +1,11 @@
+# Nemo — build record
+
+> **Scope note.** This record began with the Windows build, in the repository this
+> one was split from, so its first half documents Vulkan, PyInstaller and the Win32
+> quirks. Everything from the "macOS" section onward is this app. It is kept whole
+> because the reasoning carries: the same measurements decided the Mac build's
+> window size, silence gate and vocabulary behaviour.
+
 # Nemo - build record
 
 Version 0.1, 2026-10-23. Published 2026-10-24 at

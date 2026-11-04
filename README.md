@@ -1,285 +1,140 @@
 # Nemo for Mac
 
-Hold **Right Command**, speak, release. The text appears where the cursor is.
-Offline: audio goes to a whisper server on `127.0.0.1:8129` and nowhere else.
+Hold **Right Command**, speak, let go. The text appears where your cursor is, in
+about a third of a second, entirely on this machine. No account, no cloud, no
+telemetry, no history on disk.
 
-Hold **Right Command**, speak, let go. The text appears where your cursor is.
-Offline: audio goes to a whisper server on `127.0.0.1:8129` and nowhere else.
+![The pill while listening](docs/hero.png)
 
-Nemo for Windows is a separate project at
-<https://github.com/flyingsotong/nemo>. The two began as one repository and share
-their history; this one stands alone now.
-
-## Install (this machine)
+Whisper `large-v3-turbo` runs on Metal through a resident `whisper-server`, so the
+model is never loaded on the critical path. Audio goes to `127.0.0.1:8129` and
+nowhere else.
 
 ```sh
-brew install whisper.cpp          # Metal-enabled bottle; no overlay needed
-./build.sh                        # builds and signs dist/Nemo.app
+brew install whisper.cpp        # the Metal engine, not bundled
+git clone https://github.com/flyingsotong/nemo-mac && cd nemo-mac
+./build.sh                      # builds and signs dist/Nemo.app
 open dist/Nemo.app
 ```
 
-The model is `~/Library/Application Support/Nemo/models/ggml-large-v3-turbo.bin`,
-downloaded and SHA-256 verified against the catalogue on first run (or with
-`--fetch-model`).
+The 1.6 GB model is fetched and SHA-256 verified on first run. macOS 26 or later
+for the Liquid Glass pill; the painted pill is used below that.
 
-## Files
+## Use
 
-Everything the app owns lives in `~/Library/Application Support/Nemo/`:
+Point at any text field, hold **Right Command**, talk, release. Escape cancels
+while you are still holding. A press shorter than 0.3 s is treated as a tap and
+ignored.
 
-| File | What it is |
+The pill appears on whichever screen holds the pointer, and the menu bar icon turns
+**orange** while the microphone is open:
+
+![Menu bar icon, idle and listening](docs/menubar-icon.png)
+
+| Pill | Meaning |
 |---|---|
-| `config.json` | overrides any of the settings below |
-| `vocabulary.txt` | one term per line; biases spelling |
-| `models/` | the ggml model |
-| `mic_levels.json` | the learned silence gate |
-| `nemo.log` | plain text, trimmed to 512 KB / last 400 lines |
+| **Listening** | the microphone is open |
+| **Transcribing** | the engine has the audio |
+| **Copied** | on the clipboard and pasted |
+| **No speech** | there was audio, but it was too quiet to be speech |
+| **No mic audio** | the microphone returned digital silence; the device is reopened before your next press |
+| **Paused** | dictation is off, and the key reaches the app normally |
 
-The `.app` is only the conductor. The engine binary is Homebrew's.
+![Every pill state](docs/pill-states.png)
+
+The menu carries the engine and model the running process reports, the last
+transcript, settings and vocabulary, and start-at-login:
+
+![The menu](docs/menu.png)
+
+## How fast
+
+Measured on a 14-inch MacBook Pro with an M5, not carried over from the Windows
+build:
+
+| | |
+|---|---|
+| key release → text on the clipboard | **301 ms** for a 6 s take |
+| engine round trip, 640-frame window | ~290 ms |
+| clipboard + Command-V | 4 ms |
+| cold start to usable | 1.10 s |
+| pill frame at 2x | 1.91 ms |
+| idle, hidden | 0.2% of one core (app), 0.4% (engine) |
+
+`small.en` transcribes the same take in 182 ms, at the cost of coined names. One
+line in `config.json` switches.
+
+## How it works
+
+```
+Right Command (swallowed) → Recorder: 16 kHz mono int16 → WAV in memory
+    → POST 127.0.0.1:8129/inference  (multipart: file, response_format=text,
+      temperature=0, language, prompt)
+    → clean() → history → clipboard + Command-V → pill
+```
+
+Three decisions worth knowing:
+
+- **The key is swallowed** by a `CGEventTap`, so it never reaches the focused app.
+  A leaked Command would fire shortcuts — ⌘Q quits, ⌘W closes — which is why this
+  is not optional.
+- **The encoder window is a server setting.** Whisper always encodes a fixed
+  window, so a 2 s take costs nearly what a 12 s one does; 640 frames (12.8 s) is
+  the measured compromise, and a longer take restarts the engine wider.
+- **The pill is event-driven**, 30 Hz only while visible, with an activity
+  assertion held so App Nap cannot throttle the tap.
 
 ## Settings
 
-`config.json`, read at start and on **Reload settings**:
+`config.json` in `~/Library/Application Support/Nemo/`, read at start and on
+**Reload settings**:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `HOTKEY` | `"right_command"` | `right_command` or `right_option`; which key talks |
-| `GLASS` | `true` | draw the pill on Liquid Glass instead of a painted pill |
-| `SUPPRESS_HOTKEY` | `true` | swallow the hotkey; `false` lets it through |
+| `HOTKEY` | `"right_command"` | `right_command` or `right_option` |
+| `SUPPRESS_HOTKEY` | `true` | swallow the key; `false` lets it through |
 | `DICTATION_MODE` | `"push"` | `"toggle"` for tap to start, tap to stop |
 | `LANGUAGE` | `"en"` | `""` to auto-detect |
 | `MODEL_FILE` | `ggml-large-v3-turbo.bin` | which file in `models/` |
 | `MIC_DEVICE` | `null` | system default, a name substring, or an index |
 | `PASTE` | `true` | `false` is clipboard only |
-| `TRAILING_SPACE` | `true` | append a space so dictations do not run together |
+| `TRAILING_SPACE` | `true` | so two dictations do not run together |
+| `GLASS` | `true` | Liquid Glass pill, or the painted one |
+| `MIN_PEAK` | `0.025` | silence gate; learns from your takes |
+| `AUDIO_CTX` | `640` | encoder window, in 20 ms frames |
+| `KEEP_WARM_SEC` | `300` | silent inference while idle; stretched on battery |
 | `OVERLAY` | `true` | `false` is silent mode |
-| `MIN_PEAK` | `0.025` | energy gate; **re-measure on a new machine** |
-| `SILENT_PEAK` | `0.0005` | below this the mic returned silence, not a quiet room |
-| `KEEP_WARM_SEC` | `300` | silent inference interval while idle; `0` disables |
-| `AUDIO_CTX` | `640` | encoder window in 20 ms frames (640 = 12.8 s) |
-| `THREADS` | `4` | performance cores on this chip |
+| `THREADS` | `4` | performance cores |
 
-## Permissions
+`vocabulary.txt` holds one term per line, passed as Whisper's initial prompt. The
+**first three carry the most weight** — this engine's prompt is positional, so a
+term four tokens from the end has no effect at all.
 
-Three, and the app cannot grant itself any of them:
+## Known behaviour, not bugs
 
-- **Microphone** — capture. Without the usage string in `Info.plist`, macOS kills
-  the process instead of returning an error.
-- **Accessibility** — the event tap and the Command-V. Granted per *code
-  identity*: a source run is the Python binary, a bundle is `Nemo.app`. Expect to
-  grant it once per identity, not once per rebuild if the signing identity is
-  stable.
-- **Input Monitoring** — some macOS versions want this for the tap as well. If
-  Accessibility is on and the hotkey still does nothing, check here.
-
-**Check permissions** in the menu says which is missing and opens the right pane.
-
-Dictation into a **secure input field** (password boxes) does not work. macOS
-blocks every tap there. That is correct behaviour, not a bug.
-
-## What the Mac build does differently
-
-Measured on this machine, not assumed:
-
-1. **The engine window is a server setting, not a request field.** whisper.cpp
-   accepts `audio_ctx` per request, but on this build varying it between requests
-   corrupts the next decode (deterministically: a smaller window after a larger
-   one produced garbage). So the window is fixed at server start (`AUDIO_CTX`),
-   and a take longer than the window restarts the server larger once.
-2. **A small window can make the decoder repeat a sentence.** At 640 frames one
-   clip transcribed correctly and another came back doubled; at 768 it was the
-   other way round. No small window was clean on both. So the transcript is
-   checked for a repeated run of eight words, and a hit retries once at the full
-   1500-frame window and stays there for the session. A doubled sentence in a
-   document is worse than a slower take.
-3. **The vocabulary prompt is positional.** Terms about four tokens from the end
-   of the prompt have no effect; the last two or three decide the spelling. This
-   build repeats the first three terms at the end so the ones listed first are
-   the ones that land. Put the names that matter at the top of `vocabulary.txt`.
-4. **Beam search is not the cost.** Greedy decoding measured identical at full
-   window; it is kept for determinism.
-5. **The menu bar icon is the state light.** It is a monochrome template — so macOS
-   inverts it in dark mode and it never looks like a sticker — and it turns **orange**
-   while the microphone is live, dims while paused, and is plain otherwise. The orange
-   microphone macOS shows during capture is a system privacy indicator; no app can hide
-   it, so the Nemo icon repeats it rather than competing with it.
-6. **The encoder, not the decoder, is the latency.** large-v3-turbo keeps
-   Whisper's full 32-layer encoder: 490 ms on Metal for the 30 s window against
-   100 ms for `small.en`. That is why `AUDIO_CTX` exists.
-
-## Cost of being idle
-
-The spec asks whether a hidden app is indistinguishable from not running. Measured
-with `ps` over 90 s with the pill hidden and one keep-warm in the window:
-
-| Process | CPU time | Share of one core | Resident |
-|---|---|---|---|
-| `Nemo` | 0.20 s / 90 s | ~0.2% | 105 MB, unchanged |
-| `whisper-server` | 0.33 s / 90 s | ~0.4% | 1.8 GB, unchanged |
-
-Extrapolated, that is single-digit seconds of CPU per hour, of which most is the
-keep-warm inference (one every 300 s on AC, stretched on battery). The pill runs
-no timer while hidden, which is the design the spec asked for, and both
-resident sizes were identical at both samples, so nothing is drifting.
-
-`powermetrics` would give joules rather than CPU time, but it needs root; these
-numbers are the honest proxy, not the spec's ideal.
-
-## Pill frame cost
-`render()` measured at 30 Hz over 120 frames:
-
-| Scale | Median | p90 |
-|---|---|---|
-| 1x (Windows equivalent) | 0.55 ms | 0.63 ms |
-| 2x (this Retina display) | 2.08 ms | 2.26 ms |
-
-The spec's target is under 2 ms; at 2x it is just over, against 1.69 ms on
-Windows at 1x. That is 6% of one core while the pill is visible, which is the only
-time it renders, so it has not been optimised further — the visible cost is about
-one second per dictation.
-
-## Liquid Glass
-
-The pill draws on the system's own material rather than a painted gradient:
-`NSGlassEffectView` (macOS 26 and later), regular style, corner radius 20, with a
-dark tint so the light text keeps its contrast. The renderer still produces every
-frame — it just stops painting a background and draws the dot, the label and the
-bars over the material instead.
-
-It costs nothing in speed. Measured at 2x: **1.91 ms per frame with glass against
-1.99 ms without**, because skipping the background copy is worth more than the
-compositing costs. That is the whole reason it was worth doing.
-
-Two honest caveats:
-
-- It reads lighter than the solid pill. On this machine's dark wallpaper it looks
-  like smoked glass; over a bright window the contrast is weaker. The tint is
-  `colorWithCalibratedWhite_alpha_(0.0, 0.45)` in `pill.py` if it wants darkening.
-- `NSGlassEffectView` is macOS 26+, so the solid pill remains the fallback on
-  anything older, and `{"GLASS": false}` in `config.json` brings it back on this
-  one.
-
-## Where the latency actually went
-
-The `audio … -> …ms` log line starts its clock *after* the microphone has closed, so
-it understated the wait by a fifth. Measured from the key release to the text being
-on the clipboard:
-
-| Stage | Cost |
-|---|---|
-| microphone teardown (`stream.stop()` + `close()`) | **117 ms** |
-| engine round trip, 640-frame window | ~290 ms |
-| clipboard + Command-V | 4 ms |
-
-That 117 ms was the single largest avoidable cost in the app, and it was doing
-nothing: the samples were already in memory, so it was waiting for a device to
-drain before starting work that did not depend on it. The teardown now runs on its
-own thread while transcription begins; the next press joins that thread first so
-two streams never overlap, and shutdown joins it so CoreAudio is never torn down
-under a live thread.
-
-| | release to text |
-|---|---|
-| before | 448 ms |
-| after | **301 ms** |
-
-Audio capture is unaffected: sample counts from a 2 s hold match the blocking
-version within one 64 ms block, which is the trailing silence after the key is
-released.
-
-`Recorder.close()` uses a plain `stop()` rather than `abort()` — `abort()` is
-faster but provoked a CoreAudio `-50` when it raced the next open, and the whole
-point is that this work is off the critical path now.
-
-## Cold start
-
-Measured on the signed bundle, from the launch to the menu-bar item being usable:
-**1.10 s** (the spec's target is under 2 s).
-
-The order in the log matters more than the number: the event tap installs and the
-listener comes up *before* the engine is asked to warm, so a press during startup
-queues behind the engine instead of being dropped for want of a hook.
-
-## Measured here
-
-Turbo, Metal, warm server, HTTP round trip:
-
-| Window | Time (4.7 s clip) | Notes |
-|---|---|---|
-| 1500 (30 s) | 448 ms | the default every other build uses |
-| 640 (12.8 s) | 284 ms | default here |
-| 512 (10.2 s) | 181 ms | truncates 10.8 s audio |
-| 256 (5.1 s) | 129 ms | only for very short takes |
-
-CPU fallback, same clip: 8.1 s encode against 490 ms on Metal. So Metal is
-genuinely doing the work; the bottle is not the bottleneck (a native source
-build measured *slower*, 650 ms).
-
-Release-to-paste, driven end to end through the microphone with the clipboard as
-the only output (speaker playback, synthetic hotkey, so the timing excludes
-human key travel and the paste keystroke):
-
-| Take | Audio | Engine | Output | Total | Peak |
-|---|---|---|---|---|---|
-| push | 6.0 s | 323 ms | 4 ms | 328 ms | 0.110 |
-| toggle | 5.5 s | 318 ms | 3 ms | 321 ms | 0.118 |
-
-The output half is 3-4 ms, matching the Windows measurement. The engine half is
-what the product feels like, and it is why `AUDIO_CTX` exists.
-
-First inference after start measured **797 ms**, and the keep-warm logged itself
-absorbing it (`keep-warm absorbed a cold take`) before anyone was waiting. That is
-the week-one hypothesis behaving as designed, on a second platform.
-
-## Acceptance status
-
-Verified here: the tap (swallow, press/release, re-arm), recording, the gate
-(including that it learns: quiet peaks loosened it to 0.0098, floored at 0.002),
-transcription, the clipboard, **the whole pipeline into a focused TextEdit
-document**, Escape cancel, toggle mode, all eight pill states, the menu bar item
-and its wording, **Insert last transcript**, pause and resume with the icon dimmed,
-Check permissions, the signed bundle surviving a rebuild with its Accessibility
-grant intact, the login item, and clean shutdown.
-
-From 20 real takes on this machine, the gate calibrated itself: peaks ran from
-0.0484 to 0.1187 (median 0.0882) against an idle room at 0.0139, and after the
-twentieth take `effective_min_peak()` settled at **0.0204** — above the room,
-well below the quietest real take. That is the week-one learned gate doing in
-production exactly what it was built for, and it means `MIN_PEAK` no longer needs
-tuning by hand.
-
-Still unverified: a press while paused showing **Paused** and passing the key
-through to the document (the decision is tested, the delivery is not), Copy last
-transcript by clicking, and sleep/wake.
-
-## Tests
-
-Two suites pin the behaviour that came out of measurement, so retuning a constant
-cannot quietly change what the app promises:
-
-```sh
-.venv/bin/python scripts/test_hotkey_logic.py   # what the tap swallows and passes
-.venv/bin/python scripts/test_core_logic.py     # gate, loop detection, window, filter, vocabulary
-```
-
-`test_hotkey_logic.py` asserts the central promise directly and for both
-supported keys: the right-hand key is swallowed while running, reaches the app
-while paused, is never swallowed with `SUPPRESS_HOTKEY: false`, the left-hand key
-is never touched (so `⌘C` and `⌥e` still work), and Escape is observed but
-passed through.
-
-## Recovery
-
-If the app is killed hard (not Quit), the engine can survive holding 8129. The
-next start adopts it, logs that the window is unknown, and treats it as the
-configured default; a longer take restarts it with a window it knows. Quitting
-from the menu stops an adopted engine too.
-
-```sh
-lsof -i :8129
-pkill -f whisper-server
-```
+- **Vocabulary is a nudge, not a guarantee.** It fixes most names it can reach; it
+  will not override a confident misspelling every time.
+- **Password fields cannot be dictated into.** macOS blocks every event tap under
+  secure input.
+- **A doubled sentence is repaired, at a cost.** A short window occasionally makes
+  the decoder repeat a sentence; the app detects the repeated words, retries at the
+  full window, and stays there for the session.
+- **The clipboard is overwritten**, and on macOS that reaches your other devices
+  through Universal Clipboard.
+- **`Copied` is only shown when the text actually reached the clipboard.** If the
+  paste path fails you get an error, never a comfortable lie.
 
 ## Not in this version
 
-Spoken formatting, a microphone picker, engine swaps, cloud anything, history on
-disk. Same list as Windows, same order.
+Spoken formatting ("new line", "new paragraph"), a microphone picker, engine swaps
+(Core ML, MLX), any cloud path, history on disk.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE) and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+The engine is installed by Homebrew and is not redistributed here. There are no
+LGPL dependencies: the hotkey is a `CGEventTap`, and the menu bar item an
+`NSStatusItem`.
+
+The Windows build, and this project's earlier history, live at
+<https://github.com/flyingsotong/nemo>.
