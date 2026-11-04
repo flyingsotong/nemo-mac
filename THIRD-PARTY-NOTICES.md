@@ -50,3 +50,21 @@ https://github.com/moses-palmer/pystray.
 Not distributed with Nemo. `--fetch-model` downloads it from
 https://huggingface.co/ggerganov/whisper.cpp, and the ggml conversions there are the
 MIT-licensed OpenAI Whisper weights.
+
+## The macOS build
+
+The Mac build has **no LGPL dependencies**, because the two that existed on Windows
+have native replacements: the hotkey is a `CGEventTap` instead of `pynput`, and the
+tray icon is an `NSStatusItem` instead of `pystray`. Neither is used or shipped.
+
+| Component | Licence | Source |
+|---|---|---|
+| whisper.cpp (installed by Homebrew, **not redistributed**) | MIT | https://github.com/ggerganov/whisper.cpp |
+| numpy | BSD-3-Clause | https://numpy.org |
+| Pillow | MIT-CMU | https://python-pillow.org |
+| sounddevice | MIT | https://python-sounddevice.readthedocs.io |
+| pyobjc (Cocoa, Quartz, AVFoundation, ApplicationServices) | MIT | https://pyobjc.readthedocs.io |
+| PyInstaller (build tool only) | GPLv2 with the bootloader exception | https://pyinstaller.org |
+
+The engine is installed with Homebrew rather than bundled, so the `.app` that
+`build.sh` produces depends on it at runtime and does not redistribute it.

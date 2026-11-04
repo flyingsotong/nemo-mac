@@ -365,3 +365,76 @@ hallucination was speech, so the guard would never fire), multi-model switching
 - If the soundbar mic reads below `MIN_PEAK` (0.012), speech is rejected as
   "No speech". Playback through it measured 0.0117, so quiet speech is the first
   suspect if that ever appears.
+
+# macOS, 2026-11-04
+
+The port keeps one repository: `nemo_platform/macos/` beside the Windows modules,
+with the shared core unchanged except for the fixes below. The Windows path is
+untouched and still uses `overlay.py`, `tray.py` and `pynput`.
+
+## The engine needed no overlay and no source build
+
+Homebrew's `whisper.cpp` bottle is Metal-enabled and prints
+`ggml_metal_init: found device: Apple M5`. A source build was measured anyway,
+because the spec expected one might be needed: it was **slower** (650 ms against
+490 ms encode), so the bottle stays. CPU-only encode is 8.1 s, which is how we know
+Metal is really doing the work.
+
+## The encoder is the latency, and model width sets it
+
+large-v3-turbo keeps Whisper's full 32-layer encoder, so it costs the same 490 ms
+whether the take is 2 s or 20 s. `small.en` encodes in 100 ms but misspells coined
+names. `-ac/--audio-ctx` is the lever, and three things had to be established
+before using it:
+
+1. It is accepted **per request** (256/512/1500 → 129/181/448 ms), which looks
+   ideal for this app.
+2. Varying it **between requests corrupts the next decode**, deterministically:
+   after a 1500-frame request, a 340-frame request returned `"and it Aujourd
+   sip."` five times running. A fixed window is stable, and a strict increase is
+   safe.
+3. A smaller window can make the decoder **repeat a sentence**: 640 frames looped
+   one clip, 768 another, and no small window was clean on both.
+
+So the window is a server flag (`AUDIO_CTX`, 640 = 12.8 s), a take longer than it
+restarts the engine wider, and a transcript containing a repeated run of eight
+words is retried once at the full 1500 frames and stays there for the session. A
+doubled sentence in a document is worse than a slower take.
+
+## The vocabulary prompt is positional, and weaker than on Windows
+
+A term four tokens from the end of the prompt does nothing; the last two or three
+decide the spelling. `Tolaria` alone failed; the same term with a longer tail, or
+repeated at the end, worked. The prompt therefore repeats the first three terms as
+a tail, so the names listed first are the ones that land. This is a real regression
+against the Windows build, where a dozen terms worked from one mention.
+
+## Permissions: the identity is the whole story
+
+TCC keys Accessibility to a code identity. The Python binary that runs a source
+build was already trusted; the signed `.app` is a different identity and needs its
+own tick. The app checks `AXIsProcessTrustedWithOptions`, and offers the right
+pane. Dictation into a secure field cannot work, on any Mac, by design.
+
+## Mac-specific decisions worth keeping
+
+- `nemo_platform`, not `platform`: a local package called `platform` shadows the
+  stdlib module that Pillow and PyInstaller import.
+- The pill is event-driven: a 30 Hz timer only while visible, none while hidden.
+  App Nap is held off with `NSActivityUserInitiatedAllowingIdleSystemSleep`.
+- `MIN_PEAK` starts at 0.025 on the Mac. An idle room measured 0.0139 against the
+  Windows constant of 0.012, so the ported number would have passed silence.
+- The engine is Homebrew's, not bundled: `whisper-server` links `libwhisper` by
+  `@rpath` and a copy inside the `.app` cannot load without `install_name_tool` on
+  the whole dependency tree.
+
+## Measurements
+
+| What | Value |
+|---|---|
+| engine, 640-frame window, 4.7 s clip | 284 ms |
+| engine, full 1500-frame window | 448 ms |
+| real take, 6.0 s, whole path | 328 ms (323 engine, 4-5 out) |
+| real take, 15.4 s, after widening to 800 | 600 ms |
+| first inference after start | 797 ms, absorbed by keep-warm |
+| CPU encode, same 4.7 s clip | 8.1 s |

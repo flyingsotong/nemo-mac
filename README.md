@@ -7,6 +7,14 @@ cloud, no telemetry.
 
 ![Nemo](docs/social-preview.png)
 
+## On a Mac
+
+The macOS build is on the `macos` branch and has its own manual:
+**[MACOS.md](MACOS.md)**. Same app, different key — hold **Right Option**, not Right
+Alt — with a Metal engine, an AppKit pill and a menu-bar item. It needs
+`brew install whisper.cpp` and `./build.sh`. Windows users need nothing from that
+file.
+
 ## Installing
 
 **[Download Nemo-0.1-win64.zip](https://github.com/flyingsotong/nemo/releases/latest)**

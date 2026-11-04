@@ -511,9 +511,12 @@ class Server:
         requests is not. So a take that needs more frames costs one restart and
         then stays wide until the app restarts.
         """
-        want = max(int(ac or 0), int(self.ac or 0), int(AUDIO_CTX))
+        # AUDIO_CTX is a macOS knob. On Windows the flag is not sent, so it must
+        # not drive restarts there: a long take would bounce a working server.
+        base = int(AUDIO_CTX) if sys.platform == "darwin" else 0
+        want = max(int(ac or 0), int(self.ac or 0), base)
         if self._listening():
-            if self.proc is None and not self._adopted_pid:
+            if sys.platform == "darwin" and self.proc is None and not self._adopted_pid:
                 # Something is already serving our port: an engine left behind by
                 # a hard exit. Adopting it is cheap, but its encoder window is
                 # unknown, so only trust it up to the configured default. Past
@@ -521,7 +524,7 @@ class Server:
                 self._adopted_pid = self._listen_pid()
                 log(f"adopting existing engine (pid {self._adopted_pid or '?'}); "
                     f"window unknown, treating it as {want} frames")
-            limit = int(self.ac or AUDIO_CTX)
+            limit = int(self.ac or base)
             if want <= limit:
                 return True
             log(f"widening encoder window {limit} -> {want} frames")
