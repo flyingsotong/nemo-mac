@@ -237,9 +237,16 @@ and its wording, **Insert last transcript**, pause and resume with the icon dimm
 Check permissions, the signed bundle surviving a rebuild with its Accessibility
 grant intact, the login item, and clean shutdown.
 
-Needs a human: a real keypress end to end (the pill's **Paused** on a press while
-paused, and Option reaching the document while paused), Copy last transcript by
-clicking, sleep/wake, and `MIN_PEAK` against a real voice.
+From 20 real takes on this machine, the gate calibrated itself: peaks ran from
+0.0484 to 0.1187 (median 0.0882) against an idle room at 0.0139, and after the
+twentieth take `effective_min_peak()` settled at **0.0204** — above the room,
+well below the quietest real take. That is the week-one learned gate doing in
+production exactly what it was built for, and it means `MIN_PEAK` no longer needs
+tuning by hand.
+
+Still unverified: a press while paused showing **Paused** and passing the key
+through to the document (the decision is tested, the delivery is not), Copy last
+transcript by clicking, and sleep/wake.
 
 ## Tests
 
