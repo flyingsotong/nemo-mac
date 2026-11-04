@@ -115,7 +115,6 @@ resident sizes were identical at both samples, so nothing is drifting.
 numbers are the honest proxy, not the spec's ideal.
 
 ## Pill frame cost
-
 `render()` measured at 30 Hz over 120 frames:
 
 | Scale | Median | p90 |
@@ -127,6 +126,15 @@ The spec's target is under 2 ms; at 2x it is just over, against 1.69 ms on
 Windows at 1x. That is 6% of one core while the pill is visible, which is the only
 time it renders, so it has not been optimised further — the visible cost is about
 one second per dictation.
+
+## Cold start
+
+Measured on the signed bundle, from the launch to the menu-bar item being usable:
+**1.10 s** (the spec's target is under 2 s).
+
+The order in the log matters more than the number: the event tap installs and the
+listener comes up *before* the engine is asked to warm, so a press during startup
+queues behind the engine instead of being dropped for want of a hook.
 
 ## Measured here
 
