@@ -80,11 +80,12 @@ Measured on this machine, not assumed:
    corrupts the next decode (deterministically: a smaller window after a larger
    one produced garbage). So the window is fixed at server start (`AUDIO_CTX`),
    and a take longer than the window restarts the server larger once.
-2. **A smaller window is not free.** Even when the window covers the audio, a
-   640-frame window transcribed a 10.8 s clip correctly while 768 produced a
-   duplicated sentence and 900 mangled words on the same audio. Quality needs the
-   window to match the model's expectations, so the default is a measured
-   compromise, not the smallest value that avoids truncation.
+2. **A small window can make the decoder repeat a sentence.** At 640 frames one
+   clip transcribed correctly and another came back doubled; at 768 it was the
+   other way round. No small window was clean on both. So the transcript is
+   checked for a repeated run of eight words, and a hit retries once at the full
+   1500-frame window and stays there for the session. A doubled sentence in a
+   document is worse than a slower take.
 3. **The vocabulary prompt is positional.** Terms about four tokens from the end
    of the prompt have no effect; the last two or three decide the spelling. This
    build repeats the first three terms at the end so the ones listed first are
@@ -128,9 +129,11 @@ the week-one hypothesis behaving as designed, on a second platform.
 
 ## Acceptance status
 
-Verified here: the tap (swallow, press/release, re-arm), recording, the gate,
-transcription, the clipboard, Escape cancel, toggle mode, all eight pill states,
-the menu bar item, the signed bundle, and clean shutdown.
+Verified here: the tap (swallow, press/release, re-arm), recording, the gate
+(including that it learns: quiet peaks loosened it to 0.0098, floored at 0.002),
+transcription, the clipboard, **Command-V into a real TextEdit document**, Escape
+cancel, toggle mode, all eight pill states, the menu bar item, the signed bundle,
+the login item, and clean shutdown.
 
 Needs a human: paste into Safari / TextEdit / Terminal / VS Code, pause and resume,
 pause pass-through, Check permissions from a cold grant, start at login,

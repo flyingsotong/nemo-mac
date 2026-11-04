@@ -852,6 +852,26 @@ def audio_context_frames(pcm: np.ndarray) -> int:
     return max(128, min(1500, frames))
 
 
+def looks_looped(text: str, span: int = 8) -> bool:
+    """True if the same run of words appears twice, which is how whisper loops.
+
+    Measured on this build, a window below the model's full 30 s can make the
+    decoder repeat a sentence (640 frames on one clip, 768 on another). A single
+    duplicated 8-word run is a strong signal; ordinary speech does not repeat
+    eight consecutive words by accident.
+    """
+    words = text.split()
+    if len(words) < span * 2:
+        return False
+    seen: set[tuple] = set()
+    for i in range(len(words) - span + 1):
+        key = tuple(w.lower().strip(",.") for w in words[i:i + span])
+        if key in seen:
+            return True
+        seen.add(key)
+    return False
+
+
 def copy_to_clipboard(text: str) -> bool:
     """Put text on the clipboard. True if it landed."""
     if sys.platform == "darwin":
@@ -1225,6 +1245,19 @@ class Nemo:
             beep("error")
             return
         text = clean(raw)
+        if sys.platform == "darwin" and looks_looped(text) and (self.server.ac or 0) < 1500:
+            # A short window keeps dictation quick, but it can make the decoder
+            # repeat a sentence. Retry once at the model's full window and stay
+            # there for the rest of the session: a doubled sentence is worse than
+            # a slower take.
+            log(f"repetition in transcript at window {self.server.ac}; "
+                f"retrying at 1500")
+            try:
+                self.server.ensure(ac=1500)
+                raw = self.server.transcribe(pcm_to_wav(pcm), vocabulary_prompt())
+                text = clean(raw)
+            except Exception as exc:
+                log(f"retry at full window failed: {exc}")
         elapsed = (time.perf_counter() - t0) * 1000
         seconds = len(pcm) / SAMPLE_RATE
         if not text:

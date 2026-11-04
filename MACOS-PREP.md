@@ -30,10 +30,12 @@ MacBook Pro `Mac17,2`, M5, 4 performance cores, 16 GB, macOS 26.x/27.3 build
    decode**, deterministically: after a 1500-frame request, a 340-frame request
    returned `"and it Aujourd sip."` five times in a row. A *fixed* window is
    stable. So the window is a server flag, and a long take costs one restart.
-2. **A small window is not just truncation.** On a 10.8 s clip, 640 frames was
-   clean, 768 repeated a sentence, and 900 mangled words — even though both cover
-   the audio. Quality needs a window matched to the model, so the default is a
-   measured compromise (640), not the smallest safe value.
+2. **A small window can make the decoder loop.** Fixed windows, same two clips:
+   640 loops the short one, 768 loops the long one, 900 and 1500 are clean on
+   both in this sample. (The earlier "768 duplicated, 900 mangled" result was
+   taken while switching `audio_ctx` per request, so it belongs to finding 1.)
+   No small window was reliably clean, so the app keeps 640 on the fast path,
+   detects an eight-word repeat, and retries at 1500 for the rest of the session.
 3. **The encoder is the latency, and it scales with model width, not count.**
    large-v3-turbo keeps Whisper's 32-layer encoder: 490 ms encode, 120 ms decode.
    `small.en`: 100 ms encode. CPU-only encode of turbo: 8.1 s, so Metal really is
@@ -72,11 +74,21 @@ Also: `-mc 0` is needed, or one dictation's text leaks into the next.
 
 ## Not verified (needs a human)
 
-- Real speech end to end, real paste into Safari/TextEdit/Terminal/VS Code.
-- Escape cancel, pause, menu actions, start at login, wake handling.
-- `MIN_PEAK` for this voice; `--selftest 4` while speaking.
+- Real speech end to end through the real hotkey, into a document the user chose
+  (paste was proven with Command-V into a TextEdit document, but not with Nemo
+  driving a focused foreign app at the same time).
+- Pause, menu actions, start at login, wake handling.
 - The bundle's Accessibility grant (the source run's grant does not carry over —
   TCC is per code identity).
+
+## Harness limits worth remembering
+
+- A bare Python process cannot bring its own window to the front, so a window I
+  create is never the real focus target. Paste must be tested against an app that
+  `open -a` can activate (TextEdit worked).
+- TCC dialogs ignore synthetic key events, so they cannot be dismissed from a
+  script. Do not drive other apps with AppleScript here: it raises an Automation
+  prompt that has to be clicked by hand.
 
 ## Open, deliberately
 
