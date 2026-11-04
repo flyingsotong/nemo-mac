@@ -127,6 +127,10 @@ class MenuBar:
         button.setImage_(self._normal)
         button.setToolTip_(f"Nemo {self.version} — hold {self.hotkey_name} to talk")
         menu = self._build_menu()
+        # AppKit otherwise re-validates every item against its target and turns
+        # Copy/Insert back on when there is no transcript. Our own enable state
+        # is the true one.
+        menu.setAutoenablesItems_(False)
         menu.setDelegate_(self._target)
         item.setMenu_(menu)
         self._item = item

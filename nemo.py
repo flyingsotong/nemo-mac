@@ -1538,7 +1538,8 @@ def describe_engine(server: "Server") -> list:
     model_name = Path(MODEL_FILE).stem.replace("ggml-", "")
     try:
         gb = MODEL.stat().st_size / 1e9
-        model = f"Model: {model_name} ({gb:.1f} GB, on this PC)"
+        where = "Mac" if sys.platform == "darwin" else "PC"
+        model = f"Model: {model_name} ({gb:.1f} GB, on this {where})"
     except OSError:
         model = f"Model: {model_name}"
 
