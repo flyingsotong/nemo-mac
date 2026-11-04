@@ -133,6 +133,38 @@ Windows at 1x. That is 6% of one core while the pill is visible, which is the on
 time it renders, so it has not been optimised further — the visible cost is about
 one second per dictation.
 
+## Where the latency actually went
+
+The `audio … -> …ms` log line starts its clock *after* the microphone has closed, so
+it understated the wait by a fifth. Measured from the key release to the text being
+on the clipboard:
+
+| Stage | Cost |
+|---|---|
+| microphone teardown (`stream.stop()` + `close()`) | **117 ms** |
+| engine round trip, 640-frame window | ~290 ms |
+| clipboard + Command-V | 4 ms |
+
+That 117 ms was the single largest avoidable cost in the app, and it was doing
+nothing: the samples were already in memory, so it was waiting for a device to
+drain before starting work that did not depend on it. The teardown now runs on its
+own thread while transcription begins; the next press joins that thread first so
+two streams never overlap, and shutdown joins it so CoreAudio is never torn down
+under a live thread.
+
+| | release to text |
+|---|---|
+| before | 448 ms |
+| after | **301 ms** |
+
+Audio capture is unaffected: sample counts from a 2 s hold match the blocking
+version within one 64 ms block, which is the trailing silence after the key is
+released.
+
+`Recorder.close()` uses a plain `stop()` rather than `abort()` — `abort()` is
+faster but provoked a CoreAudio `-50` when it raced the next open, and the whole
+point is that this work is off the critical path now.
+
 ## Cold start
 
 Measured on the signed bundle, from the launch to the menu-bar item being usable:

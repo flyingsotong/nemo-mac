@@ -339,6 +339,7 @@ class Recorder:
         self._lock = threading.Lock()
         self._rate = SAMPLE_RATE
         self._on_level = None
+        self._closing: threading.Thread | None = None
 
     @property
     def active(self) -> bool:
@@ -351,6 +352,7 @@ class Recorder:
         stereo. We remember what worked and resample on stop.
         """
         import sounddevice as sd
+        self._await_previous_close()
         with self._lock:
             self._blocks = []
         self._rate = SAMPLE_RATE
@@ -387,20 +389,65 @@ class Recorder:
             return
         raise RuntimeError(f"no usable input format: {last}")
 
-    def _close(self) -> None:
-        if self._stream is not None:
-            try:
-                self._stream.stop()
-                self._stream.close()
-            finally:
-                self._stream = None
+    def _close(self, blocking: bool = True) -> None:
+        """Close the device, off the critical path when asked.
+
+        Tearing the stream down costs about 117 ms on this machine, measured, and
+        it used to sit between letting go of the key and starting to transcribe -
+        a quarter of the whole wait, spent doing nothing. The samples are already
+        in memory, so the close can happen behind the engine call.
+        """
+        stream = self._stream
+        if stream is None:
+            return
+        self._stream = None
+
+        def finish() -> None:
+            # A clean stop, not abort(): it is slower (about 117 ms here) which is
+            # exactly why it moved off this thread. abort() provoked a CoreAudio
+            # -50 when it raced the next open, and there is nothing to gain from it.
+            for step in (stream.stop, stream.close):
+                try:
+                    step(ignore_errors=True)
+                except TypeError:
+                    try:
+                        step()
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+        if blocking:
+            finish()
+            return
+        thread = threading.Thread(target=finish, name="mic-close", daemon=True)
+        thread.start()
+        self._closing = thread
+
+    def wait_for_close(self, timeout: float = 2.0) -> None:
+        """Join a pending device teardown. Must run before the process exits, or
+        CoreAudio is torn down under a live thread and the process aborts."""
+        thread = self._closing
+        if thread is not None:
+            thread.join(timeout=timeout)
+            self._closing = None
+
+    def _await_previous_close(self) -> None:
+        """A press that follows a release within a few hundred ms must not race the
+        previous stream's teardown."""
+        thread = self._closing
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=1.0)
+        self._closing = None
 
     def stop(self) -> np.ndarray | None:
-        self._close()
         with self._lock:
             if not self._blocks:
+                self._close(blocking=False)
                 return None
             pcm = np.concatenate(self._blocks, axis=0)
+            self._blocks = []
+        self._close(blocking=False)
         if pcm.ndim > 1 and pcm.shape[1] > 1:
             pcm = pcm.mean(axis=1).astype(np.int16)
         if self._rate != SAMPLE_RATE and len(pcm):
@@ -414,7 +461,7 @@ class Recorder:
         return pcm.reshape(-1)
 
     def cancel(self) -> None:
-        self._close()
+        self._close(blocking=False)
         with self._lock:
             self._blocks = []
 
@@ -1898,6 +1945,7 @@ def main() -> int:
         stop_warm.set()
         listener.stop()
         app.recorder.cancel()
+        app.recorder.wait_for_close()
         if tray is not None:
             tray.stop()
         server.shutdown()
