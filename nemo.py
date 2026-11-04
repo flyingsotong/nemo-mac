@@ -441,6 +441,7 @@ class Server:
         self._cpu_backend = ""
         self._accel = ""
         self.ac = 0
+        self._adopted_pid: int | None = None
 
     @property
     def url(self) -> str:
@@ -512,9 +513,18 @@ class Server:
         """
         want = max(int(ac or 0), int(self.ac or 0), int(AUDIO_CTX))
         if self._listening():
-            if want <= self.ac or not self.ac:
+            if self.proc is None and not self._adopted_pid:
+                # Something is already serving our port: an engine left behind by
+                # a hard exit. Adopting it is cheap, but its encoder window is
+                # unknown, so only trust it up to the configured default. Past
+                # that we would silently drop the tail of a long take.
+                self._adopted_pid = self._listen_pid()
+                log(f"adopting existing engine (pid {self._adopted_pid or '?'}); "
+                    f"window unknown, treating it as {want} frames")
+            limit = int(self.ac or AUDIO_CTX)
+            if want <= limit:
                 return True
-            log(f"widening encoder window {self.ac} -> {want} frames")
+            log(f"widening encoder window {limit} -> {want} frames")
             self.shutdown()
         # If another thread is already starting it (tray reload during a
         # dictation, say), wait for it to come up rather than serialising behind
@@ -600,6 +610,18 @@ class Server:
         with urllib.request.urlopen(req, timeout=180) as resp:
             return resp.read().decode("utf-8", "replace")
 
+    def _listen_pid(self) -> int | None:
+        """PID of whatever holds our port. Only reliable on the Mac."""
+        try:
+            out = subprocess.run(["lsof", "-ti", f"tcp:{self.port}", "-sTCP:LISTEN"],
+                                 capture_output=True, text=True, timeout=3)
+            for line in out.stdout.split():
+                if line.strip().isdigit():
+                    return int(line.strip())
+        except Exception:
+            pass
+        return None
+
     def shutdown(self) -> None:
         if self.proc and self.proc.poll() is None:
             try:
@@ -610,6 +632,19 @@ class Server:
                     self.proc.kill()
                 except Exception:
                     pass
+            return
+        # An adopted engine is ours to stop too, or quitting leaves a 1.6 GB
+        # process holding the port.
+        if self._adopted_pid:
+            try:
+                os.kill(self._adopted_pid, 15)
+                for _ in range(20):
+                    time.sleep(0.1)
+                    if not self._listening():
+                        break
+            except Exception:
+                pass
+            self._adopted_pid = None
 
 
 def _memory_gb() -> float:

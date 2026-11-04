@@ -141,7 +141,10 @@ sleep/wake, and `MIN_PEAK` against a real voice.
 
 ## Recovery
 
-If the app dies hard the engine can survive holding 8129:
+If the app is killed hard (not Quit), the engine can survive holding 8129. The
+next start adopts it, logs that the window is unknown, and treats it as the
+configured default; a longer take restarts it with a window it knows. Quitting
+from the menu stops an adopted engine too.
 
 ```sh
 lsof -i :8129
