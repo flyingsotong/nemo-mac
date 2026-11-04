@@ -1,0 +1,35 @@
+name: macOS tests
+
+# The two suites are cheap (seconds) and they encode behaviour that was measured
+# rather than assumed: which key is swallowed when, that the silence gate may only
+# loosen, that a doubled sentence is a loop but a stutter is not. Every one of
+# these exists because a real bug got past a careful reading.
+
+on:
+  push:
+    branches: [macos, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  logic:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pillow sounddevice \
+            pyobjc-framework-Cocoa pyobjc-framework-Quartz \
+            pyobjc-framework-AVFoundation pyobjc-framework-ApplicationServices
+
+      - name: Hotkey decisions (swallow, pass-through, left-hand key untouched)
+        run: python scripts/test_hotkey_logic.py
+
+      - name: Core logic (gate, loop detection, window, filter, vocabulary)
+        run: python scripts/test_core_logic.py
