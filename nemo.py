@@ -1029,10 +1029,11 @@ def copy_to_clipboard(text: str) -> bool:
     return False
 
 
-def paste(text: str) -> None:
+def paste(text: str) -> bool:
     """Paste into the focused window, adding the joining space we owe the next
     utterance. Both the clipboard and the keystroke carry the same text, so what
-    was pasted is what was copied.
+    was pasted is what was copied. Returns False if the text never reached the
+    clipboard, which is the only half we can verify.
 
     The old code slept a flat 50 ms after copying, to let the clipboard settle.
     Measured, that sleep was the single largest fixed cost in the whole path -
@@ -1046,9 +1047,10 @@ def paste(text: str) -> None:
         from nemo_platform.macos.paste import paste_text
         if not paste_text(payload):
             log("paste failed")
-        return
+            return False
+        return True
     if not copy_to_clipboard(payload):
-        return
+        return False
     try:
         import pyperclip
         for _ in range(20):            # bounded: give up after ~100 ms
@@ -1062,6 +1064,7 @@ def paste(text: str) -> None:
     with kb.pressed(Key.ctrl):
         kb.press("v")
         kb.release("v")
+    return True
 
 
 # ---- vocabulary -----------------------------------------------------------
@@ -1415,11 +1418,11 @@ class Nemo:
         record_peak(peak)
         self.history.append(text)
         if PASTE:
-            paste(text)
+            output_ok = bool(paste(text))
         else:
             # "clipboard only" mode: no keystrokes, but the text is still put
             # somewhere he can reach it. This used to do nothing at all.
-            copy_to_clipboard(text)
+            output_ok = copy_to_clipboard(text)
         # Report the whole path, not just the server call: the output half is a
         # real part of what he feels and it used to be invisible in the log.
         total = (time.perf_counter() - t0) * 1000
@@ -1433,8 +1436,15 @@ class Nemo:
         self._last_take_at = time.time()
         if total > SLOW_MS:
             log(f"slow take: {total:.0f}ms after {idle:.0f}s idle")
-        self._state("done")
-        beep("done")
+        # "Copied" is only true if the text actually reached the clipboard; a
+        # failed paste is an error, never a success with a nicer message.
+        if output_ok:
+            self._state("done")
+            beep("done")
+        else:
+            log("output failed: text is not on the clipboard")
+            self._state("error")
+            beep("error")
 
     def cancel(self) -> None:
         if self.recorder.active:
