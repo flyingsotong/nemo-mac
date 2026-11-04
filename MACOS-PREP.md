@@ -1,6 +1,6 @@
 # macOS measurement log (2026-11-04)
 
-Working notes kept from the bring-up. **`MACOS.md` is the user-facing record; this
+Working notes kept from the bring-up. **`README.md` is the user-facing record; this
 file is the trail of what was tested and what was wrong.** Several early
 conclusions here were later corrected — those corrections are written inline, so
 nobody re-derives them.

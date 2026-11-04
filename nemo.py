@@ -58,12 +58,12 @@ HOTKEY = "right_command"
 GLASS = True
 SUPPRESS_HOTKEY = True    # stop Right Alt reaching the focused app (menus / AltGr)
 LANGUAGE = "en"           # set to "" for auto-detect
-THREADS = 4 if sys.platform == "darwin" else 6
+THREADS = 4          # performance cores on this chip
 PORT = 8129
 SAMPLE_RATE = 16000
 MIC_DEVICE = None         # None = system default; substring, or an int device index
 MIN_SECONDS = 0.30
-MIN_PEAK = 0.025 if sys.platform == "darwin" else 0.012  # int16, normalised
+MIN_PEAK = 0.025     # int16, normalised; measured idle room is 0.0139
 # The Windows constant was calibrated against one soundbar. Measured on this
 # MacBook's built-in mic, an idle room peaks at 0.0139 - above the old 0.012 - so
 # the gate starts higher here and the learned gate loosens it from real takes.
@@ -187,26 +187,6 @@ HALLUCINATIONS = {
 
 
 # ---- small helpers --------------------------------------------------------
-def _ensure_console() -> None:
-    """A --noconsole build has no stdout. Reattach to the launching terminal if
-    there is one, so --list-devices / --file / --status / --selftest stay usable.
-
-    Every line these modes print is also written to nemo.log by emit(), which is the
-    reliable route: a windowless build's stdout depends on the bootloader's handle
-    plumbing (PyInstaller leaves a dummy stream, and onefile vs onedir differ), so
-    redirection to a file or a pipe can arrive empty. The log never does.
-    """
-    if not getattr(sys, "frozen", False) or os.name != "nt":
-        return
-    try:
-        import ctypes
-        if ctypes.windll.kernel32.AttachConsole(-1):  # ATTACH_PARENT_PROCESS
-            sys.stdout = open("CONOUT$", "w", encoding="utf-8", buffering=1)
-            sys.stderr = sys.stdout
-    except Exception:
-        pass
-
-
 _log_writes = 0
 _LOG_MAX_BYTES = 512 * 1024
 
@@ -245,19 +225,9 @@ def emit(msg: str) -> None:
 
 
 def beep(kind: str) -> None:
-    if not BEEP:
-        return
-    seq = {"start": [(880, 60)], "stop": [(660, 50)], "error": [(320, 110)],
-           "done": [(1100, 35)]}.get(kind, [])
-
-    def run():
-        try:
-            import winsound
-            for freq, ms in seq:
-                winsound.Beep(freq, ms)
-        except Exception:
-            pass
-    threading.Thread(target=run, daemon=True).start()
+    """No audio cues on the Mac: the pill is the feedback, and BEEP defaults off.
+    Kept as a seam so the call sites read the same on both platforms."""
+    return
 
 
 # ---- the listening pill ---------------------------------------------------
@@ -292,32 +262,6 @@ else:
     except Exception as _exc:  # tray is optional too; it carries quit and settings
         Tray = None
         _TRAY_ERROR = _exc
-
-
-def _enable_dpi_awareness() -> None:
-    """Must run before any window is created.
-
-    On a scaled display (this box is 3840x2160 at 150%), an unaware process gets
-    window geometry in logical units while GetMonitorInfo reports physical ones,
-    which puts the pill off the bottom of the screen.
-    """
-    if os.name != "nt":
-        return
-    try:
-        import ctypes
-        if ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
-            return  # PER_MONITOR_AWARE_V2
-    except Exception:
-        pass
-    try:
-        import ctypes
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
-    except Exception:
-        try:
-            import ctypes
-            ctypes.windll.user32.SetProcessDPIAware()
-        except Exception:
-            pass
 
 
 # ---- microphone -----------------------------------------------------------
@@ -569,10 +513,10 @@ class Server:
         """
         # AUDIO_CTX is a macOS knob. On Windows the flag is not sent, so it must
         # not drive restarts there: a long take would bounce a working server.
-        base = int(AUDIO_CTX) if sys.platform == "darwin" else 0
+        base = int(AUDIO_CTX)
         want = max(int(ac or 0), int(self.ac or 0), base)
         if self._listening():
-            if sys.platform == "darwin" and self.proc is None and not self._adopted_pid:
+            if self.proc is None and not self._adopted_pid:
                 # Something is already serving our port: an engine left behind by
                 # a hard exit. Adopting it is cheap, but only if it is the engine
                 # this configuration asked for. A survivor serving a different
@@ -680,7 +624,7 @@ class Server:
             return resp.read().decode("utf-8", "replace")
 
     def _state_file(self) -> Path:
-        return (DATA if sys.platform == "darwin" else ROOT) / "engine.json"
+        return DATA / "engine.json"
 
     def _read_state(self) -> dict:
         try:
@@ -921,29 +865,13 @@ def _offer_model_download(overlay) -> bool:
                 "  large-v3-turbo   1.62 GB   about 9 seconds per phrase\n\n"
                 "Measured on a Ryzen 5 7500F; a laptop CPU will be slower.\n\n" + tail)
     text = f"Nemo needs a speech model.\n\n{body}"
-    if sys.platform == "darwin":
-        from AppKit import NSApplication
-        NSApplication.sharedApplication()
-        from nemo_platform.macos.dialog import choose_model
-        pick = choose_model(want, other, text)
-        if not pick:
-            log(f"model download declined; put {MODEL.name} in {MODELS_DIR}")
-            return False
-    else:
-        try:
-            import ctypes
-            answer = ctypes.windll.user32.MessageBoxW(
-                None, text, f"{APP_NAME} {APP_VERSION}", 0x03 | 0x40)  # YESNOCANCEL | INFO
-        except Exception as exc:
-            log(f"could not ask about the model: {exc}")
-            return False
-        if answer == 6:      # IDYES
-            pick = want
-        elif answer == 7:    # IDNO
-            pick = other
-        else:
-            log(f"model download declined; put {MODEL.name} in {MODELS_DIR}")
-            return False
+    from AppKit import NSApplication
+    NSApplication.sharedApplication()
+    from nemo_platform.macos.dialog import choose_model
+    pick = choose_model(want, other, text)
+    if not pick:
+        log(f"model download declined; put {MODEL.name} in {MODELS_DIR}")
+        return False
 
     def show(pct: int) -> None:
         if overlay:
@@ -973,7 +901,7 @@ def hotkey_label() -> str:
 
 
 def privacy_line() -> str:
-    where = "Mac" if sys.platform == "darwin" else "PC"
+    where = "Mac"
     return f"Local only: audio never leaves this {where}"
 
 
@@ -1008,25 +936,11 @@ def looks_looped(text: str, span: int = 8) -> bool:
 
 def copy_to_clipboard(text: str) -> bool:
     """Put text on the clipboard. True if it landed."""
-    if sys.platform == "darwin":
-        from nemo_platform.macos.paste import copy_text
-        ok = copy_text(text)
-        if not ok:
-            log("clipboard copy failed")
-        return ok
-    try:
-        import pyperclip
-    except Exception as exc:
-        log(f"clipboard unavailable: {exc}")
-        return False
-    for _ in range(5):
-        try:
-            pyperclip.copy(text)
-            return True
-        except Exception:
-            time.sleep(0.05)
-    log("clipboard copy failed")
-    return False
+    from nemo_platform.macos.paste import copy_text
+    ok = copy_text(text)
+    if not ok:
+        log("clipboard copy failed")
+    return ok
 
 
 def paste(text: str) -> bool:
@@ -1043,27 +957,10 @@ def paste(text: str) -> bool:
     payload = text
     if TRAILING_SPACE and payload and not payload.endswith(" "):
         payload += " "
-    if sys.platform == "darwin":
-        from nemo_platform.macos.paste import paste_text
-        if not paste_text(payload):
-            log("paste failed")
-            return False
-        return True
-    if not copy_to_clipboard(payload):
+    from nemo_platform.macos.paste import paste_text
+    if not paste_text(payload):
+        log("paste failed")
         return False
-    try:
-        import pyperclip
-        for _ in range(20):            # bounded: give up after ~100 ms
-            if pyperclip.paste() == payload:
-                break
-            time.sleep(0.005)
-    except Exception:
-        time.sleep(0.02)               # clipboard unreadable; behave like before
-    from pynput.keyboard import Controller, Key
-    kb = Controller()
-    with kb.pressed(Key.ctrl):
-        kb.press("v")
-        kb.release("v")
     return True
 
 
@@ -1117,6 +1014,25 @@ def vocabulary_prompt() -> str:
     except Exception as exc:
         log(f"vocabulary unreadable: {exc}")
         return ""
+
+
+def transcribe_guarded(server: "Server", wav: bytes, prompt: str) -> str:
+    """Transcribe, and repair the one failure this engine gives us.
+
+    A window below the model's full 30 s can make the decoder repeat a sentence.
+    The check is cheap and the retry is rare, and a doubled sentence in a document
+    is worse than a slower take. Used by the hotkey path, --file and --selftest so
+    they cannot disagree about what the app does.
+    """
+    text = clean(server.transcribe(wav, prompt))
+    if looks_looped(text) and (server.ac or 0) < 1500:
+        log(f"repetition at window {server.ac}; retrying at 1500")
+        try:
+            server.ensure(ac=1500)
+            text = clean(server.transcribe(wav, prompt))
+        except Exception as exc:
+            log(f"retry at full window failed: {exc}")
+    return text
 
 
 # ---- learned silence gate -------------------------------------------------
@@ -1195,47 +1111,15 @@ def keep_warm_loop(app: "Nemo", stop: threading.Event) -> None:
 
 
 # ---- run at login ---------------------------------------------------------
-_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-_RUN_NAME = "Nemo"
-
-
 def startup_get():
     """The current login entry for Nemo, or None."""
-    if sys.platform == "darwin":
-        from nemo_platform.macos.login import startup_get as _get
-        return _get()
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY) as k:
-            try:
-                return winreg.QueryValueEx(k, _RUN_NAME)[0]
-            except FileNotFoundError:
-                return None
-    except OSError:
-        return None
+    from nemo_platform.macos.login import startup_get as _get
+    return _get()
 
 
 def startup_set(on: bool) -> tuple[bool, str]:
-    if sys.platform == "darwin":
-        from nemo_platform.macos.login import startup_set as _set
-        return _set(on)
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY, 0,
-                            winreg.KEY_SET_VALUE) as k:
-            if on:
-                exe = ROOT / "Nemo.exe"
-                if not exe.exists():
-                    return False, f"not enabling: {exe} does not exist"
-                winreg.SetValueEx(k, _RUN_NAME, 0, winreg.REG_SZ, f'"{exe}"')
-                return True, f'enabled: "{exe}" at login'
-            try:
-                winreg.DeleteValue(k, _RUN_NAME)
-            except FileNotFoundError:
-                return True, "was not enabled; nothing to remove"
-            return True, "disabled"
-    except OSError as exc:
-        return False, f"registry error: {exc}"
+    from nemo_platform.macos.login import startup_set as _set
+    return _set(on)
 
 
 # ---- app ------------------------------------------------------------------
@@ -1380,7 +1264,7 @@ class Nemo:
             self._state("error")
             beep("error")
             return
-        need = audio_context_frames(pcm) if sys.platform == "darwin" else None
+        need = audio_context_frames(pcm)
         if not self.server.ensure(ac=need):
             log("server did not become ready")
             self._state("error")
@@ -1395,7 +1279,7 @@ class Nemo:
             beep("error")
             return
         text = clean(raw)
-        if sys.platform == "darwin" and looks_looped(text) and (self.server.ac or 0) < 1500:
+        if looks_looped(text) and (self.server.ac or 0) < 1500:
             # A short window keeps dictation quick, but it can make the decoder
             # repeat a sentence. Retry once at the model's full window and stay
             # there for the rest of the session: a doubled sentence is worse than
@@ -1429,7 +1313,7 @@ class Nemo:
         # An adopted server (one we did not start) has no known window; say so
         # rather than printing 0.
         win = self.server.ac or "adopted"
-        ctx_note = f" win={win}" if sys.platform == "darwin" else ""
+        ctx_note = f" win={win}"
         log(f"audio {seconds:.1f}s{ctx_note} -> {elapsed:.0f}ms "
             f"+{total - elapsed:.0f}ms out = {total:.0f}ms peak={peak:.4f}: {text!r}")
         idle = time.time() - self._last_take_at
@@ -1455,65 +1339,12 @@ class Nemo:
 
 
 def run_listener(app: Nemo):
-    """Install the keyboard hook.
-
-    On macOS this is a CGEventTap, not pynput. The Windows path is unchanged.
-    """
-    if sys.platform == "darwin":
-        from nemo_platform.macos.hotkey import install
-        push = str(DICTATION_MODE).strip().lower() != "toggle"
-        return install(app, suppress=bool(SUPPRESS_HOTKEY), push=push, log=log,
-                       hotkey=HOTKEY)
-
-    # Windows: low-level hook. suppress_event() also stops pynput's own callbacks,
-    # so the action is driven from the hook, off-thread.
-    from pynput import keyboard
-
-    holder: dict = {}
-    alt_down = threading.Event()
+    """Install the event tap. The Windows hook lived here; on a Mac the tap is the
+    whole story, and it is in nemo_platform/macos/hotkey.py."""
+    from nemo_platform.macos.hotkey import install
     push = str(DICTATION_MODE).strip().lower() != "toggle"
-
-    def spawn(fn) -> None:
-        threading.Thread(target=fn, daemon=True).start()
-
-    def on_win32(msg, data):
-        if data.vkCode != HOTKEY_VK:
-            return True
-        down = msg in (0x0100, 0x0104)   # WM_KEYDOWN, WM_SYSKEYDOWN
-        up = msg in (0x0101, 0x0105)     # WM_KEYUP,   WM_SYSKEYUP
-        if app.paused:
-            # Paused means the key is none of our business: let Windows have it.
-            # The brief pill is the reminder that dictation is off, so a paused
-            # app never fails silently.
-            if down and not alt_down.is_set():
-                alt_down.set()
-                app._state("paused")
-            elif up:
-                alt_down.clear()
-            return True
-        if down and not alt_down.is_set():
-            alt_down.set()               # latch: auto-repeat must not restart
-            spawn(app.press if push else app.toggle)
-        elif up:
-            alt_down.clear()
-            if push:
-                spawn(app.release)       # releasing ends the utterance
-        if SUPPRESS_HOTKEY and holder.get("listener"):
-            holder["listener"].suppress_event()
-        return False  # handled here; keep it away from on_press
-
-    def on_press(key):
-        if key is keyboard.Key.esc:
-            app.cancel()
-
-    listener = keyboard.Listener(
-        on_press=on_press,
-        win32_event_filter=on_win32 if os.name == "nt" else None,
-        suppress=False,
-    )
-    holder["listener"] = listener
-    listener.start()
-    return listener
+    return install(app, suppress=bool(SUPPRESS_HOTKEY), push=push, log=log,
+                   hotkey=HOTKEY)
 
 
 # ---- what the app says about itself ---------------------------------------
@@ -1546,7 +1377,7 @@ def probe_backend(timeout: float = 20.0) -> dict:
     try:
         out = subprocess.run(
             [str(SERVER_EXE), "-h"], cwd=str(BIN) if BIN.exists() else None,
-            timeout=60 if sys.platform == "darwin" else timeout,
+            timeout=timeout,
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             creationflags=0x08000000 if os.name == "nt" else 0,
         )
@@ -1580,7 +1411,7 @@ def status_report(verify: bool = False) -> int:
         note = ""
     emit(f"{'engine':12s} : {engine_phrase(info)}{note}")
     emit(f"{'endpoint':12s} : http://127.0.0.1:{PORT} (loopback only)")
-    where = "Mac" if sys.platform == "darwin" else "PC"
+    where = "Mac"
     emit(f"{'privacy':12s} : audio never leaves this {where}; the only outbound call is --fetch-model")
 
     if MODEL.exists():
@@ -1623,7 +1454,7 @@ def status_report(verify: bool = False) -> int:
     emit(f"{'microphone':12s} : {MIC_DEVICE!r} -> {dev_name}")
 
     hold = str(DICTATION_MODE).strip().lower() != "toggle"
-    chord = "Command-V" if sys.platform == "darwin" else "Ctrl+V"
+    chord = "Command-V"
     emit(f"{'hotkey':12s} : {hotkey_label()}, {'hold to talk (push)' if hold else 'tap to toggle'}"
          f"{', swallowed' if SUPPRESS_HOTKEY else ', passed through'}")
     emit(f"{'output':12s} : "
@@ -1658,7 +1489,7 @@ def describe_engine(server: "Server") -> list:
     model_name = Path(MODEL_FILE).stem.replace("ggml-", "")
     try:
         gb = MODEL.stat().st_size / 1e9
-        where = "Mac" if sys.platform == "darwin" else "PC"
+        where = "Mac"
         model = f"Model: {model_name} ({gb:.1f} GB, on this {where})"
     except OSError:
         model = f"Model: {model_name}"
@@ -1671,7 +1502,6 @@ def describe_engine(server: "Server") -> list:
 def main() -> int:
     # Before argparse: --version and --help print during parsing, and a
     # --noconsole build has no stdout until we attach to the parent console.
-    _ensure_console()
     ap = argparse.ArgumentParser(description=f"{APP_NAME} - Right-Alt offline dictation")
     ap.add_argument("--list-devices", action="store_true", help="list microphones and exit")
     ap.add_argument("--device", default=None, help="microphone name substring or index")
@@ -1692,11 +1522,6 @@ def main() -> int:
     ap.add_argument("--version", action="version",
                     version=f"{APP_NAME} {APP_VERSION}")
     args = ap.parse_args()
-    _enable_dpi_awareness()  # before any Tk window exists
-    if (args.list_devices or args.file or args.selftest is not None
-            or args.startup or args.fetch_model or args.status):
-        _ensure_console()
-
     # Housekeeping before anything else: a killed download leaves a .part file that
     # nothing else would ever mention.
     sweep_partials()
@@ -1762,14 +1587,14 @@ def main() -> int:
         emit(f"captured {len(pcm)/SAMPLE_RATE:.2f}s  peak={peak:.4f}  rms={rms:.4f}")
         if peak < MIN_PEAK:
             print("!! level below MIN_PEAK - pick another mic with --device", file=sys.stderr)
-        need = audio_context_frames(pcm) if sys.platform == "darwin" else None
+        need = audio_context_frames(pcm)
         if not server.ensure(ac=need):
             print("whisper server failed to start", file=sys.stderr)
             return 1
         t0 = time.perf_counter()
         try:
-            text = clean(server.transcribe(
-                pcm_to_wav(pcm), vocabulary_prompt()))
+            text = transcribe_guarded(
+                server, pcm_to_wav(pcm), vocabulary_prompt())
         finally:
             server.shutdown()
         emit(f"[{(time.perf_counter()-t0)*1000:.0f} ms] {text!r}")
@@ -1792,7 +1617,7 @@ def main() -> int:
             print("whisper server failed to start", file=sys.stderr)
             return 1
         try:
-            text = clean(server.transcribe(wav, vocabulary_prompt()))
+            text = transcribe_guarded(server, wav, vocabulary_prompt())
         finally:
             server.shutdown()
         emit(f"[{(time.perf_counter()-t0)*1000:.0f} ms] {text}")
@@ -1817,8 +1642,7 @@ def main() -> int:
     if Overlay is None:
         log(f"overlay unavailable, running silently: {_OVERLAY_ERROR}")
     elif OVERLAY:
-        overlay = (Overlay(log=log, glass=GLASS) if sys.platform == "darwin"
-                   else Overlay(log=log))
+        overlay = Overlay(log=log, glass=GLASS)
         overlay.start()
 
     if Tray is None:
@@ -1861,7 +1685,7 @@ def main() -> int:
         f"to talk, Esc to cancel (device={device})")
     emit(f"{APP_NAME} {APP_VERSION} running - {gesture} {hotkey_label()} to talk.")
     need_perms = False
-    if sys.platform == "darwin" and getattr(listener, "failed", False):
+    if getattr(listener, "failed", False):
         from nemo_platform.macos.permissions import running_identity
         need_perms = True
         emit(listener.failure)
