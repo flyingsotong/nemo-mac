@@ -28,8 +28,18 @@ from nemo_platform.macos.permissions import missing, open_settings, running_iden
 from nemo_platform.macos.dialog import explain_permissions
 
 
-def _template(dim: bool) -> NSImage:
-    """22 pt monochrome waveform. Template so macOS inverts it in dark mode."""
+ACCENT = (242, 178, 62)
+
+
+def _icon(dim: bool = False, colour: tuple | None = None) -> NSImage:
+    """22 pt waveform. Monochrome template by default so macOS inverts it in dark
+    mode; an explicit colour turns the template off, which is how "listening" is
+    signalled on the app's own icon.
+
+    The orange microphone macOS shows while the mic is open is a system privacy
+    indicator — no app can hide it, and it should not try. This is the app saying
+    the same thing in its own voice.
+    """
     img = Image.new("RGBA", (44, 44), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     alpha = 110 if dim else 255
@@ -37,7 +47,8 @@ def _template(dim: bool) -> NSImage:
     x = 4
     for h in heights:
         y0 = (44 - h) // 2
-        draw.rounded_rectangle([x, y0, x + 2, y0 + h], radius=1, fill=(0, 0, 0, alpha))
+        fill = (colour[0], colour[1], colour[2], alpha) if colour else (0, 0, 0, alpha)
+        draw.rounded_rectangle([x, y0, x + 2, y0 + h], radius=1, fill=fill)
         x += 4
     from Foundation import NSData
     import io
@@ -46,7 +57,7 @@ def _template(dim: bool) -> NSImage:
     raw = buf.getvalue()
     image = NSImage.alloc().initWithData_(NSData.dataWithBytes_length_(raw, len(raw)))
     image.setSize_((22, 22))
-    image.setTemplate_(True)
+    image.setTemplate_(colour is None)
     return image
 
 
@@ -112,6 +123,8 @@ class MenuBar:
         self.on_ready = on_ready
         self._normal = None
         self._dim = None
+        self._accent = None
+        self._listening = False
         self._item = None
         self._target = None
         self._items: dict[str, NSMenuItem] = {}
@@ -119,8 +132,9 @@ class MenuBar:
     def run(self) -> None:
         app = NSApplication.sharedApplication()
         app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
-        self._normal = _template(False)
-        self._dim = _template(True)
+        self._normal = _icon(False)
+        self._dim = _icon(True)
+        self._accent = _icon(False, colour=ACCENT)
         self._target = _Target.alloc().initWithOwner_(self)
         item = NSStatusBar.systemStatusBar().statusItemWithLength_(NSVariableStatusItemLength)
         button = item.button()
@@ -176,14 +190,33 @@ class MenuBar:
             return False
 
     def _apply_icon(self) -> None:
+        """One glance should say which of the three states the app is in."""
         paused = self._paused()
+        listening = self._listening and not paused
         button = self._item.button() if self._item is not None else None
         if button is None:
             return
-        button.setImage_(self._dim if paused else self._normal)
-        button.setToolTip_(
-            f"Nemo {self.version} — paused" if paused
-            else f"Nemo {self.version} — hold {self.hotkey_name} to talk")
+        if listening:
+            button.setImage_(self._accent)
+            tip = f"Nemo {self.version} — listening"
+        elif paused:
+            button.setImage_(self._dim)
+            tip = f"Nemo {self.version} — paused"
+        else:
+            button.setImage_(self._normal)
+            tip = f"Nemo {self.version} — hold {self.hotkey_name} to talk"
+        button.setToolTip_(tip)
+
+    def set_listening(self, active: bool) -> None:
+        """Called from the recording thread; the icon itself must change on main."""
+        self._listening = bool(active)
+
+        def apply() -> None:
+            self._apply_icon()
+        if threading.current_thread() is threading.main_thread():
+            apply()
+        else:
+            AppHelper.callAfter(apply)
 
     def _build_menu(self) -> NSMenu:
         menu = NSMenu.alloc().init()

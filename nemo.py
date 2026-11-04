@@ -1195,6 +1195,7 @@ class Nemo:
         self._paused = threading.Event()
         self._needs_reopen = False
         self._last_take_at = time.time()
+        self.on_state = None      # set by main() to drive the menu bar icon
 
     @property
     def paused(self) -> bool:
@@ -1224,6 +1225,13 @@ class Nemo:
     def _state(self, name: str) -> None:
         if self.overlay:
             self.overlay.state(name)
+        # The menu bar item mirrors the same state, so the icon says "listening"
+        # even when the pill is out of sight or on another Space.
+        if self.on_state is not None:
+            try:
+                self.on_state(name == "listening")
+            except Exception:
+                pass
 
     def say(self, text: str) -> None:
         """Short confirmation in the pill. The pill is this app's own voice and
@@ -1852,6 +1860,8 @@ def main() -> int:
                         open_settings(which)
                 tray_kwargs["on_ready"] = ask_permissions
         tray = Tray(**tray_kwargs)
+        if sys.platform == "darwin":
+            app.on_state = tray.set_listening
 
     stop_warm = threading.Event()
     warm_thread = None

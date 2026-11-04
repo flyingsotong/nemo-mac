@@ -93,7 +93,12 @@ Measured on this machine, not assumed:
    the ones that land. Put the names that matter at the top of `vocabulary.txt`.
 4. **Beam search is not the cost.** Greedy decoding measured identical at full
    window; it is kept for determinism.
-5. **The encoder, not the decoder, is the latency.** large-v3-turbo keeps
+5. **The menu bar icon is the state light.** It is a monochrome template — so macOS
+   inverts it in dark mode and it never looks like a sticker — and it turns **orange**
+   while the microphone is live, dims while paused, and is plain otherwise. The orange
+   microphone macOS shows during capture is a system privacy indicator; no app can hide
+   it, so the Nemo icon repeats it rather than competing with it.
+6. **The encoder, not the decoder, is the latency.** large-v3-turbo keeps
    Whisper's full 32-layer encoder: 490 ms on Metal for the 30 s window against
    100 ms for `small.en`. That is why `AUDIO_CTX` exists.
 
