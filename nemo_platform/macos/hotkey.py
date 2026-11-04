@@ -52,6 +52,7 @@ class TapListener:
         self._suppress = suppress
         self._log = log
         self._down = False
+        self._seen_modifier = False
         self._tap = None
         self._loop = None
         self._source = None
@@ -115,16 +116,29 @@ class TapListener:
 
         if event_type != Quartz.kCGEventFlagsChanged:
             return event
-        if _keycode(event) != RIGHT_OPTION:
-            return event
-
+        kc = _keycode(event)
         flags = _flags(event)
-        now_down = bool(flags & _DEV_RALT)
-        # If the device bit is absent on this keyboard, the key code still told us
-        # this event is the right key. Fall back to the shared Option mask only
-        # when the device bit never appears — logged once, not guessed silently.
-        if not now_down and not (flags & _DEV_LALT) and (flags & Quartz.kCGEventFlagMaskAlternate):
-            now_down = True
+        if not self._seen_modifier:
+            # One line, once, so a "hotkey does nothing" report carries its own
+            # diagnosis: which key code, and whether the device-specific right
+            # Option bit is present on this keyboard.
+            self._seen_modifier = True
+            self._log(f"modifier event: keycode={kc} flags=0x{flags:08x} "
+                      f"devR={'yes' if flags & _DEV_RALT else 'no'}")
+        # Identify the key by code, and accept the device bit as a second opinion:
+        # Section 8.2 of the build spec warns that either may be the reliable one
+        # on a given keyboard, and the two agree on an ANSI layout.
+        if kc == RIGHT_OPTION:
+            now_down = bool(flags & _DEV_RALT)
+            if (not now_down and not (flags & _DEV_LALT)
+                    and (flags & Quartz.kCGEventFlagMaskAlternate)):
+                now_down = True     # device bit absent; the key code told us
+        elif kc == LEFT_OPTION and (flags & _DEV_RALT):
+            now_down = True         # bits say right Option even though the code says left
+        elif kc == LEFT_OPTION and self._down:
+            now_down = False        # the release for that odd case; must clear the latch
+        else:
+            return event
 
         if self._is_paused():
             if now_down and not self._down:
