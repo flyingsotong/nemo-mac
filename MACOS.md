@@ -40,6 +40,7 @@ The `.app` is only the conductor. The engine binary is Homebrew's.
 | Key | Default | Meaning |
 |---|---|---|
 | `HOTKEY` | `"right_command"` | `right_command` or `right_option`; which key talks |
+| `GLASS` | `true` | draw the pill on Liquid Glass instead of a painted pill |
 | `SUPPRESS_HOTKEY` | `true` | swallow the hotkey; `false` lets it through |
 | `DICTATION_MODE` | `"push"` | `"toggle"` for tap to start, tap to stop |
 | `LANGUAGE` | `"en"` | `""` to auto-detect |
@@ -132,6 +133,27 @@ The spec's target is under 2 ms; at 2x it is just over, against 1.69 ms on
 Windows at 1x. That is 6% of one core while the pill is visible, which is the only
 time it renders, so it has not been optimised further — the visible cost is about
 one second per dictation.
+
+## Liquid Glass
+
+The pill draws on the system's own material rather than a painted gradient:
+`NSGlassEffectView` (macOS 26 and later), regular style, corner radius 20, with a
+dark tint so the light text keeps its contrast. The renderer still produces every
+frame — it just stops painting a background and draws the dot, the label and the
+bars over the material instead.
+
+It costs nothing in speed. Measured at 2x: **1.91 ms per frame with glass against
+1.99 ms without**, because skipping the background copy is worth more than the
+compositing costs. That is the whole reason it was worth doing.
+
+Two honest caveats:
+
+- It reads lighter than the solid pill. On this machine's dark wallpaper it looks
+  like smoked glass; over a bright window the contrast is weaker. The tint is
+  `colorWithCalibratedWhite_alpha_(0.0, 0.45)` in `pill.py` if it wants darkening.
+- `NSGlassEffectView` is macOS 26+, so the solid pill remains the fallback on
+  anything older, and `{"GLASS": false}` in `config.json` brings it back on this
+  one.
 
 ## Where the latency actually went
 

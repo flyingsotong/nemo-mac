@@ -12,6 +12,9 @@ import time
 
 from AppKit import (
     NSApplication,
+    NSColor,
+    NSGlassEffectView,
+    NSGlassEffectViewStyleRegular,
     NSBackingStoreBuffered,
     NSBitmapImageRep,
     NSColor,
@@ -32,7 +35,7 @@ from AppKit import (
 from Foundation import NSObject
 from PyObjCTools import AppHelper
 
-from overlay_render import H, W, render
+from overlay_render import H, R, W, render
 
 _BEHAVIOUR = (
     NSWindowCollectionBehaviorCanJoinAllSpaces
@@ -44,6 +47,15 @@ _DWELL = {
     "done": 0.9, "error": 0.9, "paused": 0.9,
 }
 _BAR_COUNT = 9
+
+# Liquid Glass (macOS 26 and later). The window material is the system's own, so
+# this costs nothing in CPU: the renderer simply stops painting a background and
+# draws the same content over it. Set False to fall back to the solid pill.
+USE_GLASS = True
+
+
+def _glass_available(enabled: bool = True) -> bool:
+    return bool(enabled) and bool(USE_GLASS) and NSGlassEffectView is not None
 
 
 def _on_main(fn) -> None:
@@ -71,7 +83,8 @@ class _Tick(NSObject):
 class PillWindow:
     """Queue-free. state() and level() are safe from any thread."""
 
-    def __init__(self, log=None) -> None:
+    def __init__(self, log=None, glass: bool = True) -> None:
+        self._glass_enabled = bool(glass)
         self._log = log or (lambda m: None)
         self._label = "hidden"
         self._until = 0.0
@@ -120,7 +133,19 @@ class PillWindow:
         window.setCollectionBehavior_(_BEHAVIOUR)
         window.setHidesOnDeactivate_(False)
         view = NSImageView.alloc().initWithFrame_(frame)
-        window.setContentView_(view)
+        self._glass = None
+        if _glass_available(self._glass_enabled):
+            glass = NSGlassEffectView.alloc().initWithFrame_(frame)
+            glass.setStyle_(NSGlassEffectViewStyleRegular)
+            glass.setCornerRadius_(float(R))
+            # A dark, forgiving tint keeps the light text readable over any
+            # wallpaper; Apple's clear style is unreadable on a bright desktop.
+            glass.setTintColor_(NSColor.colorWithCalibratedWhite_alpha_(0.0, 0.45))
+            glass.setContentView_(view)
+            window.setContentView_(glass)
+            self._glass = glass
+        else:
+            window.setContentView_(view)
         self._window = window
         self._view = view
         self._tick = _Tick.alloc().initWithOwner_(self)
@@ -162,7 +187,8 @@ class PillWindow:
             self._visible = True
         try:
             scale = max(1, int(round(self._window.backingScaleFactor() or 2)))
-            frame = render(label, self._phase, hist, scale=scale)
+            frame = render(label, self._phase, hist, scale=scale,
+                           glass=self._glass is not None)
             self._view.setImage_(_nsimage(frame))
         except Exception as exc:
             self._log(f"pill render error: {exc}")

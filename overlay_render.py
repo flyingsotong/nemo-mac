@@ -97,12 +97,21 @@ def _bar_geo():
     return W - 20 - total, total
 
 
-def render(label: str, phase: float, hist, scale: int = 1) -> Image.Image:
-    """One frame. `label` is a state name, or `say:`, `hint:`, `alert:` plus text."""
+def render(label: str, phase: float, hist, scale: int = 1,
+           glass: bool = False) -> Image.Image:
+    """One frame. `label` is a state name, or `say:`, `hint:`, `alert:` plus text.
+
+    With `glass` the background is left transparent so the window's own material
+    shows through; everything drawn on top is unchanged, so the two paths cannot
+    drift in wording or geometry.
+    """
     scale = max(1, int(scale))
-    if scale not in _BG:
-        _BG[scale] = _background(scale)
-    img = _BG[scale].copy()
+    if glass:
+        img = Image.new("RGBA", (W * SS * scale, H * SS * scale), (0, 0, 0, 0))
+    else:
+        if scale not in _BG:
+            _BG[scale] = _background(scale)
+        img = _BG[scale].copy()
     d = ImageDraw.Draw(img)
     ss = SS * scale
     cy = H * ss // 2

@@ -52,6 +52,10 @@ HOTKEY_VK = 0xA5          # Windows: Right Alt (VK_RMENU)
 # is the default because that is where the hand already is; either is one config
 # line away.
 HOTKEY = "right_command"
+# macOS only: draw the pill on the system's Liquid Glass material instead of a
+# painted gradient. Cosmetic; costs no frame time (the renderer skips the
+# background). Set false for the original solid pill.
+GLASS = True
 SUPPRESS_HOTKEY = True    # stop Right Alt reaching the focused app (menus / AltGr)
 LANGUAGE = "en"           # set to "" for auto-detect
 THREADS = 4 if sys.platform == "darwin" else 6
@@ -119,7 +123,8 @@ if sys.platform == "darwin":
 _OVERRIDABLE = {"HOTKEY_VK", "SUPPRESS_HOTKEY", "LANGUAGE", "THREADS", "PORT",
                 "SAMPLE_RATE", "MIC_DEVICE", "MIN_SECONDS", "MIN_PEAK",
                 "PASTE", "BEEP", "OVERLAY", "DICTATION_MODE", "TRAILING_SPACE",
-                "MODEL_FILE", "KEEP_WARM_SEC", "SILENT_PEAK", "AUDIO_CTX", "HOTKEY"}
+                "MODEL_FILE", "KEEP_WARM_SEC", "SILENT_PEAK", "AUDIO_CTX", "HOTKEY",
+                "GLASS"}
 
 
 def reload_config() -> bool:
@@ -1802,7 +1807,8 @@ def main() -> int:
     if Overlay is None:
         log(f"overlay unavailable, running silently: {_OVERLAY_ERROR}")
     elif OVERLAY:
-        overlay = Overlay(log=log)
+        overlay = (Overlay(log=log, glass=GLASS) if sys.platform == "darwin"
+                   else Overlay(log=log))
         overlay.start()
 
     if Tray is None:
