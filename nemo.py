@@ -518,17 +518,26 @@ class Server:
         if self._listening():
             if sys.platform == "darwin" and self.proc is None and not self._adopted_pid:
                 # Something is already serving our port: an engine left behind by
-                # a hard exit. Adopting it is cheap, but its encoder window is
-                # unknown, so only trust it up to the configured default. Past
-                # that we would silently drop the tail of a long take.
-                self._adopted_pid = self._listen_pid()
-                log(f"adopting existing engine (pid {self._adopted_pid or '?'}); "
-                    f"window unknown, treating it as {want} frames")
-            limit = int(self.ac or base)
-            if want <= limit:
-                return True
-            log(f"widening encoder window {limit} -> {want} frames")
-            self.shutdown()
+                # a hard exit. Adopting it is cheap, but only if it is the engine
+                # this configuration asked for. A survivor serving a different
+                # model would make the menu name one model while another answers,
+                # which is the sort of confident wrong answer this app must not
+                # give. engine.json records what was started.
+                state = self._read_state()
+                if state.get("model") != MODEL.name:
+                    log(f"existing engine serves {state.get('model')!r}, "
+                        f"config wants {MODEL.name!r}; restarting it")
+                    self.shutdown()
+                else:
+                    self._adopted_pid = self._listen_pid()
+                    log(f"adopting existing engine (pid {self._adopted_pid or '?'}, "
+                        f"{MODEL.name}); window unknown, treating it as {want} frames")
+            if self._listening():
+                limit = int(self.ac or base)
+                if want <= limit:
+                    return True
+                log(f"widening encoder window {limit} -> {want} frames")
+                self.shutdown()
         # If another thread is already starting it (tray reload during a
         # dictation, say), wait for it to come up rather than serialising behind
         # the lock for up to `wait` seconds.
@@ -573,6 +582,7 @@ class Server:
                     return False
                 if self._listening():
                     self.ac = want
+                    self._write_state(want)
                     log(f"server ready on port {self.port} (window {want} frames)")
                     return True
                 time.sleep(0.15)
@@ -613,6 +623,27 @@ class Server:
         with urllib.request.urlopen(req, timeout=180) as resp:
             return resp.read().decode("utf-8", "replace")
 
+    def _state_file(self) -> Path:
+        return (DATA if sys.platform == "darwin" else ROOT) / "engine.json"
+
+    def _read_state(self) -> dict:
+        try:
+            return json.loads(self._state_file().read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _write_state(self, window: int) -> None:
+        """Record what this engine was started with, so a later run can tell
+        whether a surviving process is the one it wants."""
+        try:
+            self._state_file().write_text(json.dumps({
+                "model": MODEL.name,
+                "window": window,
+                "pid": self.proc.pid if self.proc else self._adopted_pid,
+            }), encoding="utf-8")
+        except Exception:
+            pass
+
     def _listen_pid(self) -> int | None:
         """PID of whatever holds our port. Only reliable on the Mac."""
         try:
@@ -648,6 +679,10 @@ class Server:
             except Exception:
                 pass
             self._adopted_pid = None
+        try:
+            self._state_file().unlink()
+        except OSError:
+            pass
 
 
 def _memory_gb() -> float:
