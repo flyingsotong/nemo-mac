@@ -88,6 +88,10 @@ GATE_MIN_SAMPLES = 20
 GATE_FRACTION = 0.35
 GATE_FLOOR = 0.002
 SLOW_MS = 400
+# A long take widens the encoder window and it cannot shrink in place (that
+# corrupts the next decode on this build), so the window returns to normal by
+# restarting the engine - only ever while idle, where the reload is invisible.
+WINDOW_IDLE_RESET = 90.0
 PEAKS_MAX = 500
 PASTE = True
 BEEP = False              # the pill is the feedback now; beeps off by default
@@ -623,6 +627,20 @@ class Server:
         with urllib.request.urlopen(req, timeout=180) as resp:
             return resp.read().decode("utf-8", "replace")
 
+    def reset_window(self, ac: int | None = None) -> bool:
+        """Shrink the encoder window back to the configured default.
+
+        Shrinking in place corrupts decodes on this build, so this costs a restart;
+        it is only ever called while idle. Returns True if the engine came back.
+        """
+        target = int(ac or AUDIO_CTX)
+        if not self.ac or self.ac <= target:
+            return False
+        log(f"window reset: {self.ac} -> {target} frames")
+        self.shutdown()
+        self.ac = 0
+        return self.ensure(ac=target)
+
     def _state_file(self) -> Path:
         return DATA / "engine.json"
 
@@ -1102,6 +1120,15 @@ def keep_warm_loop(app: "Nemo", stop: threading.Event) -> None:
     last = 0.0
     while not stop.wait(2.0):
         if app.recorder.active or app._busy.locked() or app.paused:
+            continue
+        # One long dictation widens the window for every take after it. Put it back
+        # while nobody is waiting: a restart now, not 200 ms on every sentence.
+        server = app.server
+        idle = time.time() - app._last_take_at
+        if server.ac and server.ac > int(AUDIO_CTX) and idle > WINDOW_IDLE_RESET:
+            log(f"idle {idle:.0f}s with a {server.ac}-frame window; "
+                f"returning to {int(AUDIO_CTX)}")
+            server.reset_window()
             continue
         interval = keep_warm_interval()
         if interval <= 0 or time.time() - last < interval:
