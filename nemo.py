@@ -1653,7 +1653,7 @@ def status_report(verify: bool = False) -> int:
 
 # ---- what the app says about itself ---------------------------------------
 def describe_engine(server: "Server") -> list:
-    """Three facts for the tray menu, each one true of the running process.
+    """Two facts for the menu, each one true of the running process.
 
     Written as a module function rather than a closure so it can be tested: the
     point of these lines is that they report reality, so "does it say the right
@@ -1674,14 +1674,13 @@ def describe_engine(server: "Server") -> list:
     model_name = Path(MODEL_FILE).stem.replace("ggml-", "")
     try:
         gb = MODEL.stat().st_size / 1e9
-        where = "Mac"
-        model = f"Model: {model_name} ({gb:.1f} GB, on this {where})"
+        model = f" · {model_name} ({gb:.1f} GB)"
     except OSError:
-        model = f"Model: {model_name}"
+        model = f" · {model_name}"
 
-    # The claim worth making, and the one a user can check: the audio goes to a
-    # loopback port answered by a process on this machine, and nowhere else.
-    return [engine, model, privacy_line()]
+    # One line for what is doing the work and with what; then the claim a user can
+    # check: the audio goes to a loopback port answered on this machine, nowhere else.
+    return [f"{engine}{model}", privacy_line()]
 
 
 def main() -> int:

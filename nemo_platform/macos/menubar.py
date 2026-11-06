@@ -231,8 +231,8 @@ class MenuBar:
     def _build_menu(self) -> NSMenu:
         menu = NSMenu.alloc().init()
         self._add(menu, "version", f"Nemo {self.version}", None, enabled=False)
+        # Engine and model on one line: two facts, one row, less to read.
         self._add(menu, "engine", "Engine: starting...", None, enabled=False)
-        self._add(menu, "model", "Model", None, enabled=False)
         self._add(menu, "privacy", "Local only: audio never leaves this Mac", None, enabled=False)
         menu.addItem_(NSMenuItem.separatorItem())
         self._add(menu, "pause", "Pause dictation", "pause:")
@@ -248,11 +248,9 @@ class MenuBar:
         self._add(menu, "copy", "Copy last transcript", "copy:")
         self._add(menu, "insert", "Insert last transcript", "insert:")
         menu.addItem_(NSMenuItem.separatorItem())
+        # Settings owns vocabulary, reload, login and permissions now; the menu
+        # keeps only what is about dictating.
         self._add(menu, "settings", "Settings…", "settings:")
-        self._add(menu, "vocab", "Open vocabulary", "vocabulary:")
-        self._add(menu, "reload", "Reload settings", "reload:")
-        self._add(menu, "startup", "Start at login", "startup:")
-        self._add(menu, "perms", "Check permissions", "permissions:")
         menu.addItem_(NSMenuItem.separatorItem())
         self._add(menu, "quit", "Quit Nemo", "quit:")
         return menu
@@ -268,7 +266,7 @@ class MenuBar:
     def _refresh(self, menu) -> None:
         self._rebuild_mic_menu()
         lines = self._lines()
-        for key, index in (("engine", 0), ("model", 1), ("privacy", 2)):
+        for key, index in (("engine", 0), ("privacy", 1)):
             item = self._items.get(key)
             if item is not None and index < len(lines) and lines[index]:
                 item.setTitle_(lines[index])
@@ -285,9 +283,6 @@ class MenuBar:
         pause = self._items.get("pause")
         if pause is not None:
             pause.setState_(1 if self._paused() else 0)
-        startup = self._items.get("startup")
-        if startup is not None:
-            startup.setState_(1 if self.startup_get() else 0)
         self._apply_icon()
 
     def _rebuild_mic_menu(self) -> None:

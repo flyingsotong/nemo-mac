@@ -44,8 +44,9 @@ The pill appears on whichever screen holds the pointer, and the menu bar icon tu
 
 ![Every pill state](docs/pill-states.png)
 
-The menu carries the engine and model the running process reports, a microphone
-picker, the last transcript, settings and vocabulary, and start-at-login:
+The menu stays short: what is doing the work, the microphone by name, pause, the
+last transcript, Settings, and Quit. Everything that used to be a menu item —
+vocabulary, login, permissions, reload — lives in the window now:
 
 ![The menu](docs/menu.png)
 
