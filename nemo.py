@@ -44,7 +44,7 @@ VOCAB_FILE = ROOT / "vocabulary.txt"
 VOCAB_MAX_CHARS = 600     # whisper's prompt window is small; stay well inside it
 
 APP_NAME = "Nemo"
-APP_VERSION = "0.2"
+APP_VERSION = "0.3"
 
 # ---- knobs ----------------------------------------------------------------
 HOTKEY_VK = 0xA5          # Windows: Right Alt (VK_RMENU)
@@ -1170,6 +1170,28 @@ def mic_choices() -> list[tuple[str, object]]:
     return choices
 
 
+def set_setting(key: str, value) -> bool:
+    """Change one setting, persist it, and leave the global in step.
+
+    Returned False for anything not in _OVERRIDABLE, so a stale UI cannot write a
+    key the module does not use.
+    """
+    if key not in _OVERRIDABLE:
+        return False
+    globals()[key] = value
+    if key == "MODEL_FILE":
+        globals()["MODEL"] = MODELS_DIR / str(value)
+    try:
+        data = {}
+        if _CONFIG_FILE.exists():
+            data = json.loads(_CONFIG_FILE.read_text(encoding="utf-8-sig"))
+        data[key] = value
+        _CONFIG_FILE.write_text(json.dumps(data), encoding="utf-8")
+    except Exception as exc:
+        log(f"could not save {key}: {exc}")
+    return True
+
+
 def remember_mic(value) -> None:
     """Record the chosen microphone in config.json without disturbing other keys."""
     try:
@@ -1899,6 +1921,21 @@ def main() -> int:
         )
         if sys.platform == "darwin":
             tray_kwargs["hotkey_name"] = hotkey_label()
+            from nemo_platform.macos.settings import SettingsWindow
+
+            def apply_setting(key: str) -> None:
+                """Some settings need the engine, or the app, before they count."""
+                if key in ("MODEL_FILE", "THREADS", "LANGUAGE", "AUDIO_CTX"):
+                    do_reload()
+                elif key == "MIC_DEVICE":
+                    app.device = resolve_device(MIC_DEVICE)
+                    app._needs_reopen = True
+                elif key in ("HOTKEY", "GLASS", "OVERLAY"):
+                    log(f"{key} takes effect the next time Nemo starts")
+
+            settings_window = SettingsWindow.alloc().initWithApp_onApply_log_(
+                app, apply_setting, log)
+            tray_kwargs["on_settings"] = settings_window.show
             tray_kwargs["mic_devices"] = mic_choices
             tray_kwargs["current_mic"] = lambda: MIC_DEVICE
             tray_kwargs["on_pick_mic"] = app.choose_mic

@@ -94,8 +94,16 @@ Three decisions worth knowing:
 
 ## Settings
 
-`config.json` in `~/Library/Application Support/Nemo/`, read at start and on
-**Reload settings**:
+**Menu → Settings…** opens the window: hotkey, mode, language, appearance, the
+microphone, the model, the encoder window, keep-warm, the silence gate and a
+vocabulary editor.
+
+![The settings window](docs/settings.png) Changes apply as you make them; the engine restarts only for
+the settings that need it.
+
+Everything lives in `config.json` under `~/Library/Application Support/Nemo/`, so
+it is still a text file if you prefer one — the window writes it, and the
+**Advanced** tab opens it.
 
 | Key | Default | Meaning |
 |---|---|---|

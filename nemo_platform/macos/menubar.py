@@ -82,7 +82,7 @@ class _Target(NSObject):
         self.owner._insert_last()
 
     def settings_(self, sender):
-        self.owner._open("config.json")
+        self.owner._open_settings()
 
     def vocabulary_(self, sender):
         self.owner._open("vocabulary.txt")
@@ -109,7 +109,8 @@ class MenuBar:
                  on_copy_last=None, on_insert_last=None, last_preview=None,
                  is_paused=None, on_toggle_pause=None, on_say=None,
                  status_lines=None, hotkey_name: str = "Right Command", on_ready=None,
-                 mic_devices=None, current_mic=None, on_pick_mic=None):
+                 mic_devices=None, current_mic=None, on_pick_mic=None,
+                 on_settings=None):
         self.version = version
         self.root = Path(root)
         self.startup_get = startup_get
@@ -128,6 +129,7 @@ class MenuBar:
         self.mic_devices = mic_devices
         self.current_mic = current_mic
         self.on_pick_mic = on_pick_mic
+        self.on_settings = on_settings
         self._mic_menu = None
         self._normal = None
         self._dim = None
@@ -246,7 +248,7 @@ class MenuBar:
         self._add(menu, "copy", "Copy last transcript", "copy:")
         self._add(menu, "insert", "Insert last transcript", "insert:")
         menu.addItem_(NSMenuItem.separatorItem())
-        self._add(menu, "settings", "Open settings", "settings:")
+        self._add(menu, "settings", "Settings…", "settings:")
         self._add(menu, "vocab", "Open vocabulary", "vocabulary:")
         self._add(menu, "reload", "Reload settings", "reload:")
         self._add(menu, "startup", "Start at login", "startup:")
@@ -386,6 +388,15 @@ class MenuBar:
                     self.log(f"insert last failed: {exc}")
             AppHelper.callAfter(lambda: self._notify("Inserted" if ok else "Nothing to insert"))
         threading.Thread(target=work, daemon=True).start()
+
+    def _open_settings(self) -> None:
+        if self.on_settings is not None:
+            try:
+                self.on_settings()
+                return
+            except Exception as exc:
+                self.log(f"could not open settings: {exc}")
+        self._open("config.json")
 
     def _open(self, name: str) -> None:
         path = self.root / name
