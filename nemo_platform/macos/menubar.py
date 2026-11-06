@@ -304,6 +304,18 @@ class MenuBar:
                 current = self.current_mic()
             except Exception:
                 current = None
+        # Name the live device on the menu row itself, so it can be read without
+        # opening anything. Truncated because a device name can be long.
+        shown = "System default"
+        for label, value in choices:
+            if value == current:
+                shown = label
+                break
+        if len(shown) > 28:
+            shown = shown[:27].rstrip() + "…"
+        item = self._items.get("mic")
+        if item is not None:
+            item.setTitle_(f"Microphone: {shown}")
         for label, value in choices:
             item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(label, "mic:", "")
             item.setTarget_(self._target)
