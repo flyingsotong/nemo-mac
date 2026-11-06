@@ -44,8 +44,8 @@ The pill appears on whichever screen holds the pointer, and the menu bar icon tu
 
 ![Every pill state](docs/pill-states.png)
 
-The menu carries the engine and model the running process reports, the last
-transcript, settings and vocabulary, and start-at-login:
+The menu carries the engine and model the running process reports, a microphone
+picker, the last transcript, settings and vocabulary, and start-at-login:
 
 ![The menu](docs/menu.png)
 
@@ -82,7 +82,13 @@ Three decisions worth knowing:
   is not optional.
 - **The encoder window is a server setting.** Whisper always encodes a fixed
   window, so a 2 s take costs nearly what a 12 s one does; 640 frames (12.8 s) is
-  the measured compromise, and a longer take restarts the engine wider.
+  the measured compromise, and a longer take restarts the engine wider. Because a
+  wider window makes every later take slower, it returns to normal after 90 s
+  without a dictation.
+- **Silence is trimmed before sending.** Edge silence is not free: a 24 s take that
+  was really 6 s of speech cost 1463 ms and opened the window to 1500 frames;
+  trimmed, the same take costs 233 ms and stays at 640. It also transcribes better,
+  because the decoder stops inventing words for the padding.
 - **The pill is event-driven**, 30 Hz only while visible, with an activity
   assertion held so App Nap cannot throttle the tap.
 
@@ -114,8 +120,10 @@ term four tokens from the end has no effect at all.
 
 ## Known behaviour, not bugs
 
-- **Vocabulary is a nudge, not a guarantee.** It fixes most names it can reach; it
-  will not override a confident misspelling every time.
+- **Vocabulary is a nudge plus a correction.** The prompt biases spelling, and
+  then any capitalised word within two edits of a listed term is rewritten to that
+  term — "Tellaria" becomes "Tolaria" — with every change logged. Ordinary words
+  are left alone.
 - **Password fields cannot be dictated into.** macOS blocks every event tap under
   secure input.
 - **A doubled sentence is repaired, at a cost.** A short window occasionally makes

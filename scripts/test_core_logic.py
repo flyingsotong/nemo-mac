@@ -109,6 +109,48 @@ def main() -> int:
                     len(nemo.vocabulary_prompt()) <= nemo.VOCAB_MAX_CHARS,
                     str(len(nemo.vocabulary_prompt())))
 
+        # --- silence trimming ----------------------------------------------
+        sr = nemo.SAMPLE_RATE
+        tone = (np.sin(np.linspace(0, 2000, sr)) * 8000).astype(np.int16)
+        padded = np.concatenate([np.zeros(sr * 2, dtype=np.int16), tone,
+                                 np.zeros(sr * 2, dtype=np.int16)])
+        trimmed = nemo.trim_silence(padded)
+        ok &= check("trimming removes edge silence",
+                    len(trimmed) < len(padded) * 0.5,
+                    f"{len(padded)} -> {len(trimmed)}")
+        ok &= check("trimming keeps the speech itself",
+                    len(trimmed) >= len(tone), str(len(trimmed)))
+        ok &= check("trimming leaves a clean take alone",
+                    len(nemo.trim_silence(tone)) == len(tone))
+        ok &= check("trimming keeps a take that is all silence",
+                    len(nemo.trim_silence(np.zeros(sr, dtype=np.int16))) == sr)
+
+        # --- vocabulary correction -----------------------------------------
+        vocab.write_text("Tolaria\nNemo\n", encoding="utf-8")
+        ok &= check("the real miss is corrected",
+                    nemo.apply_vocabulary("notes on Tellaria") == "notes on Tolaria",
+                    nemo.apply_vocabulary("notes on Tellaria"))
+        ok &= check("a second miss is corrected",
+                    nemo.apply_vocabulary("into Toleria now") == "into Tolaria now")
+        ok &= check("an ordinary word is left alone",
+                    nemo.apply_vocabulary("a tolerant approach") == "a tolerant approach")
+        ok &= check("an ordinary capitalised word is left alone",
+                    nemo.apply_vocabulary("the Teller was late") == "the Teller was late")
+        ok &= check("a correct spelling is not touched",
+                    nemo.apply_vocabulary("Tolaria is fine") == "Tolaria is fine")
+        ok &= check("lowercase words are not corrected",
+                    nemo.apply_vocabulary("notes on tellaria") == "notes on tellaria")
+        ok &= check("no vocabulary means no change",
+                    nemo.apply_vocabulary("notes on Tellaria") == "notes on Tellaria"
+                    if not vocab.exists() else True)
+
+        # --- microphone listing ---------------------------------------------
+        choices = nemo.mic_choices()
+        ok &= check("the microphone list starts with the system default",
+                    choices and choices[0] == ("System default", None))
+        ok &= check("the microphone list names devices",
+                    all(isinstance(label, str) for label, _ in choices))
+
         # --- text out ------------------------------------------------------
         ok &= check("hotkey is named for the platform",
                     nemo.hotkey_label() == ("Right Command" if sys.platform == "darwin" else "Right Alt"))

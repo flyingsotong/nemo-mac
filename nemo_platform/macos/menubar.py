@@ -69,6 +69,9 @@ class _Target(NSObject):
         self.owner = owner
         return self
 
+    def mic_(self, sender):
+        self.owner._set_mic(sender.representedObject())
+
     def pause_(self, sender):
         self.owner._toggle_pause()
 
@@ -105,7 +108,8 @@ class MenuBar:
                  on_reload, icon_path: Path, log,
                  on_copy_last=None, on_insert_last=None, last_preview=None,
                  is_paused=None, on_toggle_pause=None, on_say=None,
-                 status_lines=None, hotkey_name: str = "Right Command", on_ready=None):
+                 status_lines=None, hotkey_name: str = "Right Command", on_ready=None,
+                 mic_devices=None, current_mic=None, on_pick_mic=None):
         self.version = version
         self.root = Path(root)
         self.startup_get = startup_get
@@ -121,6 +125,10 @@ class MenuBar:
         self.status_lines = status_lines
         self.hotkey_name = hotkey_name
         self.on_ready = on_ready
+        self.mic_devices = mic_devices
+        self.current_mic = current_mic
+        self.on_pick_mic = on_pick_mic
+        self._mic_menu = None
         self._normal = None
         self._dim = None
         self._accent = None
@@ -226,6 +234,14 @@ class MenuBar:
         self._add(menu, "privacy", "Local only: audio never leaves this Mac", None, enabled=False)
         menu.addItem_(NSMenuItem.separatorItem())
         self._add(menu, "pause", "Pause dictation", "pause:")
+        if self.mic_devices is not None:
+            mic_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Microphone", None, "")
+            self._mic_menu = NSMenu.alloc().init()
+            mic_item.setSubmenu_(self._mic_menu)
+            mic_item.setEnabled_(True)
+            menu.addItem_(mic_item)
+            self._items["mic"] = mic_item
         self._add(menu, "last", "Last: (nothing yet)", None, enabled=False)
         self._add(menu, "copy", "Copy last transcript", "copy:")
         self._add(menu, "insert", "Insert last transcript", "insert:")
@@ -248,6 +264,7 @@ class MenuBar:
         self._items[key] = item
 
     def _refresh(self, menu) -> None:
+        self._rebuild_mic_menu()
         lines = self._lines()
         for key, index in (("engine", 0), ("model", 1), ("privacy", 2)):
             item = self._items.get(key)
@@ -270,6 +287,40 @@ class MenuBar:
         if startup is not None:
             startup.setState_(1 if self.startup_get() else 0)
         self._apply_icon()
+
+    def _rebuild_mic_menu(self) -> None:
+        """Rebuilt on every open: AirPods appear and vanish while the app runs."""
+        if self._mic_menu is None or self.mic_devices is None:
+            return
+        self._mic_menu.removeAllItems()
+        try:
+            choices = list(self.mic_devices() or [])
+        except Exception as exc:
+            self.log(f"could not list microphones: {exc}")
+            choices = [("System default", None)]
+        current = None
+        if self.current_mic is not None:
+            try:
+                current = self.current_mic()
+            except Exception:
+                current = None
+        for label, value in choices:
+            item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(label, "mic:", "")
+            item.setTarget_(self._target)
+            item.setRepresentedObject_(value)
+            item.setState_(1 if value == current else 0)
+            self._mic_menu.addItem_(item)
+
+    def _set_mic(self, value) -> None:
+        if self.on_pick_mic is None:
+            return
+        try:
+            self.on_pick_mic(value)
+        except Exception as exc:
+            self.log(f"microphone switch failed: {exc}")
+            self._notify("Mic switch failed")
+            return
+        self._notify("Mic: " + ("System default" if value is None else str(value)))
 
     def _last_label(self) -> str:
         text = ""

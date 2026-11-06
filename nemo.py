@@ -1053,6 +1053,135 @@ def transcribe_guarded(server: "Server", wav: bytes, prompt: str) -> str:
     return text
 
 
+def trim_silence(pcm: np.ndarray, margin: float = 0.15,
+                 floor: float = 0.004) -> np.ndarray:
+    """Drop leading and trailing near-silence, keeping a short margin either side.
+
+    Whisper encodes a fixed window, so silence at the edges of a take is not free:
+    it makes a 6 s sentence look like a 20 s one, widens the encoder window and
+    costs time on every later take. Trimming does not change what was said.
+    """
+    if pcm is None or len(pcm) < SAMPLE_RATE * 0.2:
+        return pcm
+    level = np.abs(pcm.astype(np.int32))
+    gate = max(int(floor * 32768), int(level.max() * 0.03))
+    voiced = np.nonzero(level > gate)[0]
+    if len(voiced) == 0:
+        return pcm
+    pad = int(margin * SAMPLE_RATE)
+    start = max(0, int(voiced[0]) - pad)
+    end = min(len(pcm), int(voiced[-1]) + pad)
+    return pcm[start:end]
+
+
+def _distance(a: str, b: str) -> int:
+    """Levenshtein distance, small strings only."""
+    if a == b:
+        return 0
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1,
+                           prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def _close_enough(word: str, term: str) -> bool:
+    """Conservative spelling-similarity test for vocabulary correction.
+
+    Measured misses: "Tellaria" and "Toleria" for "Tolaria" - two edits, so a
+    single-edit rule misses the real case. Two edits are allowed only for longer
+    terms, the first letter must match, and a capitalised word is required: that
+    keeps ordinary words like "tolerant" out of it.
+    """
+    word, term = word.strip(), term.strip()
+    if not word or not term or " " in term:
+        return False
+    if word.lower() == term.lower():
+        return False                      # already right
+    if len(term) < 4:
+        return False
+    if word[:1].lower() != term[:1].lower():
+        return False
+    allowed = 1 if len(term) <= 6 else 2
+    if abs(len(word) - len(term)) > allowed:
+        return False
+    return _distance(word.lower(), term.lower()) <= allowed
+
+
+def apply_vocabulary(text: str) -> str:
+    """Nudge near-misses towards the user's vocabulary.
+
+    Measured on this build, Whisper's initial prompt is positional and weak: it
+    fixed "Tolaria" only when the term sat in the prompt's tail. This is the
+    deterministic half - it corrects a word that is one or two letters off a term
+    the user has listed, and logs every change so a wrong correction is visible.
+    """
+    if not text:
+        return text
+    terms = []
+    try:
+        if VOCAB_FILE.exists():
+            for raw in VOCAB_FILE.read_text(encoding="utf-8-sig").splitlines():
+                line = raw.strip()
+                if line and not line.startswith("#"):
+                    terms.append(line)
+    except Exception:
+        return text
+    if not terms:
+        return text
+    out = []
+    for word in text.split():
+        core = word.strip(".,!?;:\"'()[]")
+        replacement = None
+        for term in terms:
+            if " " in term or not core[:1].isupper():
+                continue
+            if _close_enough(core, term):
+                replacement = term
+                break
+        if replacement and replacement.lower() != core.lower():
+            fixed = word.replace(core, replacement, 1)
+            log(f"vocabulary: {word!r} -> {fixed!r}")
+            out.append(fixed)
+        else:
+            out.append(word)
+    return " ".join(out)
+
+
+def mic_choices() -> list[tuple[str, object]]:
+    """Input devices for the menu: label plus the value to store.
+
+    The value is the device *name*, not its index: indices move when devices come
+    and go, and AirPods appear and disappear constantly.
+    """
+    choices: list[tuple[str, object]] = [("System default", None)]
+    try:
+        import sounddevice as sd
+        for dev in sd.query_devices():
+            if dev.get("max_input_channels", 0) > 0:
+                name = str(dev["name"]).strip()
+                if all(name != existing for existing, _ in choices):
+                    choices.append((name, name))
+    except Exception as exc:
+        log(f"could not list microphones: {exc}")
+    return choices
+
+
+def remember_mic(value) -> None:
+    """Record the chosen microphone in config.json without disturbing other keys."""
+    try:
+        data = {}
+        if _CONFIG_FILE.exists():
+            data = json.loads(_CONFIG_FILE.read_text(encoding="utf-8-sig"))
+        data["MIC_DEVICE"] = value
+        _CONFIG_FILE.write_text(json.dumps(data), encoding="utf-8")
+    except Exception as exc:
+        log(f"could not record MIC_DEVICE: {exc}")
+
+
 # ---- learned silence gate -------------------------------------------------
 def _load_peaks() -> list[float]:
     try:
@@ -1185,6 +1314,21 @@ class Nemo:
     def toggle_pause(self) -> bool:
         return self.set_paused(not self.paused)
 
+    def choose_mic(self, value) -> bool:
+        """Switch input device without a restart.
+
+        The device is reopened before the next press, which also covers the case
+        that prompted this: AirPods connecting mid-session and quietly becoming the
+        default input.
+        """
+        global MIC_DEVICE
+        MIC_DEVICE = value
+        remember_mic(value)
+        self.device = resolve_device(value)
+        self._needs_reopen = True
+        log(f"microphone -> {value!r} (device {self.device})")
+        return True
+
     def last_text(self) -> str:
         return self.history[-1] if self.history else ""
 
@@ -1291,6 +1435,11 @@ class Nemo:
             self._state("error")
             beep("error")
             return
+        trimmed = trim_silence(pcm)
+        if len(trimmed) < len(pcm) - int(SAMPLE_RATE * 0.2):
+            log(f"trimmed silence: {len(pcm)/SAMPLE_RATE:.1f}s -> "
+                f"{len(trimmed)/SAMPLE_RATE:.1f}s")
+            pcm = trimmed
         need = audio_context_frames(pcm)
         if not self.server.ensure(ac=need):
             log("server did not become ready")
@@ -1299,26 +1448,13 @@ class Nemo:
             return
         t0 = time.perf_counter()
         try:
-            raw = self.server.transcribe(pcm_to_wav(pcm), vocabulary_prompt())
+            text = apply_vocabulary(transcribe_guarded(
+                self.server, pcm_to_wav(pcm), vocabulary_prompt()))
         except Exception as exc:
             log(f"transcribe failed: {exc}")
             self._state("error")
             beep("error")
             return
-        text = clean(raw)
-        if looks_looped(text) and (self.server.ac or 0) < 1500:
-            # A short window keeps dictation quick, but it can make the decoder
-            # repeat a sentence. Retry once at the model's full window and stay
-            # there for the rest of the session: a doubled sentence is worse than
-            # a slower take.
-            log(f"repetition in transcript at window {self.server.ac}; "
-                f"retrying at 1500")
-            try:
-                self.server.ensure(ac=1500)
-                raw = self.server.transcribe(pcm_to_wav(pcm), vocabulary_prompt())
-                text = clean(raw)
-            except Exception as exc:
-                log(f"retry at full window failed: {exc}")
         elapsed = (time.perf_counter() - t0) * 1000
         seconds = len(pcm) / SAMPLE_RATE
         if not text:
@@ -1763,6 +1899,9 @@ def main() -> int:
         )
         if sys.platform == "darwin":
             tray_kwargs["hotkey_name"] = hotkey_label()
+            tray_kwargs["mic_devices"] = mic_choices
+            tray_kwargs["current_mic"] = lambda: MIC_DEVICE
+            tray_kwargs["on_pick_mic"] = app.choose_mic
             if need_perms:
                 def ask_permissions() -> None:
                     from nemo_platform.macos.dialog import explain_permissions
