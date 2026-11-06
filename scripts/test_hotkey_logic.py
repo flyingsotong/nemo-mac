@@ -9,6 +9,7 @@ Run:  .venv/bin/python scripts/test_hotkey_logic.py
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))

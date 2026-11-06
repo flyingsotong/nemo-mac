@@ -19,6 +19,9 @@ import numpy as np  # noqa: E402
 
 import nemo  # noqa: E402
 
+# Keep the app's own log clean: a test run must not look like use.
+nemo.LOGFILE = Path(tempfile.gettempdir()) / "nemo-test.log"
+
 
 def check(name: str, passed: bool, detail: str = "") -> bool:
     print(("PASS  " if passed else "FAIL  ") + name + (f"  [{detail}]" if detail and not passed else ""))
