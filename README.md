@@ -57,15 +57,19 @@ build:
 
 | | |
 |---|---|
-| key release → text on the clipboard | **301 ms** for a 6 s take |
-| engine round trip, 640-frame window | ~290 ms |
+| key release → text, default window | **median 281 ms, p90 385 ms** (34 takes) |
+| the same, all takes, long dictations included | median 336 ms, p90 623 ms |
+| engine round trip, 640-frame window | ~280 ms |
 | clipboard + Command-V | 4 ms |
 | cold start to usable | 1.10 s |
 | pill frame at 2x | 1.91 ms |
 | idle, hidden | 0.2% of one core (app), 0.4% (engine) |
 
-`small.en` transcribes the same take in 182 ms, at the cost of coined names. One
-line in `config.json` switches.
+The engine is 99% of that: the output half measures 3 ms at the median. Long
+dictations are the whole tail — a 54 s take needs two 30 s windows and costs 1.6 s.
+
+`small.en` transcribes the same take in 182 ms, at the cost of coined names; the
+Settings window switches it.
 
 ## How it works
 
