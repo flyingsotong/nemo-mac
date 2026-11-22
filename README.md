@@ -1,3 +1,5 @@
+![Nemo for Mac cover: dictation that never leaves your Mac](docs/cover.png)
+
 # Nemo for Mac
 
 [![macOS tests](https://github.com/flyingsotong/nemo-mac/actions/workflows/macos-tests.yml/badge.svg)](https://github.com/flyingsotong/nemo-mac/actions/workflows/macos-tests.yml)
