@@ -21,7 +21,7 @@ import nemo  # noqa: E402
 from overlay_render import HC_SURFACES, PALETTES, _font_candidates, render  # noqa: E402
 
 if sys.platform == "darwin":
-    from nemo_platform.macos.pill import _contrast_ink, _tint_color, _tint_key  # noqa: E402
+    from nemo_platform.macos.pill import _GLOW_RADIUS, _PAD, _status_key  # noqa: E402
     from nemo_platform.macos.theme import normalise, resolve  # noqa: E402
 
 # Keep the app's own log clean: a test run must not look like use.
@@ -193,18 +193,16 @@ def main() -> int:
                     all(glass.getpixel((8, y))[3] == 0
                         for y in range(glass.height)))
         if sys.platform == "darwin":
-            ok &= check("listening tints the material orange",
-                        _tint_key("listening") == "orange")
-            ok &= check("done tints the material green",
-                        _tint_key("done") == "green")
-            ok &= check("quiet states keep the plain material",
-                        _tint_key("paused") is None and _tint_key("hint:Hi") is None)
-            ok &= check("bright status tint takes dark ink",
-                        _contrast_ink((247, 133, 35)) == (0, 0, 0))
-            ok &= check("dark material takes light ink",
-                        _contrast_ink((20, 24, 30)) == (255, 255, 255))
-            ok &= check("status tint is translucent",
-                        0 < _tint_color("orange").alphaComponent() < 1)
+            ok &= check("listening glows orange",
+                        _status_key("listening") == "orange")
+            ok &= check("done glows green",
+                        _status_key("done") == "green")
+            ok &= check("errors glow red",
+                        _status_key("error") == "red")
+            ok &= check("quiet states have no glow",
+                        _status_key("paused") is None and _status_key("hint:Hi") is None)
+            ok &= check("the window pads enough room for the glow",
+                        2 * _PAD >= _GLOW_RADIUS)
             ok &= check("the Mac pill uses SF Pro first",
                         _font_candidates()[0].endswith("SFNS.ttf"))
             ok &= check("a junk theme follows the system", normalise("sidebar") == "system")

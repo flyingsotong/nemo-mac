@@ -26,6 +26,7 @@ from AppKit import (
     NSImage,
     NSImageView,
     NSMakeRect,
+    NSView,
     NSScreen,
     NSStatusWindowLevel,
     NSTimer,
@@ -54,11 +55,14 @@ _DWELL = {
 }
 _BAR_COUNT = 9
 _INK_CACHE: dict[tuple, dict] = {}
+# Room for the status glow outside the glass. The window is larger than the
+# pill so the halo is not clipped; placement still centres the visible pill.
+_PAD = 28
+_WW, _HH = W + 2 * _PAD, H + 2 * _PAD
 
 
-def _tint_key(label: str) -> str | None:
-    """Which state gets a tinted material. Status colour is an allowed use of
-    colour on glass; everything else keeps the system's own material."""
+def _status_key(label: str) -> str | None:
+    """Which state gets a coloured glow. The glass itself is never tinted."""
     if label == "listening":
         return "orange"
     if label == "done":
@@ -68,32 +72,13 @@ def _tint_key(label: str) -> str | None:
     return None
 
 
-_TINT_COLORS = {
+_GLOW_COLORS = {
     "orange": NSColor.systemOrangeColor,
     "green": NSColor.systemGreenColor,
     "red": NSColor.systemRedColor,
 }
-# A translucent tint: the glass still shows through, so the pill reads as
-# coloured material rather than a flat block of paint.
-_TINT_ALPHA = 0.28
-
-
-def _tint_color(key: str):
-    return _TINT_COLORS[key]().colorWithAlphaComponent_(_TINT_ALPHA)
-
-
-def _luminance(rgb) -> float:
-    """Relative luminance, for choosing legible ink on a tinted material."""
-    def channel(v):
-        v /= 255.0
-        return v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
-    r, g, b = (channel(v) for v in rgb[:3])
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b
-
-
-def _contrast_ink(rgb) -> tuple[int, int, int]:
-    """Black or white, whichever reads against a bright status tint."""
-    return (0, 0, 0) if _luminance(rgb) > 0.18 else (255, 255, 255)
+_GLOW_RADIUS = 18.0
+_GLOW_OPACITY = 0.85
 
 # Liquid Glass (macOS 26 and later). The window material is the system's own, so
 # this costs nothing in CPU: the renderer simply stops painting a background and
@@ -161,7 +146,7 @@ class PillWindow:
                     self._until = time.time() + 0.9
                 elif name.startswith("hint:"):
                     self._until = time.time() + 4.5
-            self._apply_tint(name)
+            self._apply_glow(name)
             self._ensure_timer()
             self.tick()
         _on_main(apply)
@@ -172,23 +157,28 @@ class PillWindow:
                 self._hist = self._hist[1:] + [float(value)]
         _on_main(apply)
 
-    # -- theme -----------------------------------------------------------
-    def _apply_tint(self, label: str) -> None:
-        """Tint the whole material for a status, never for decoration.
-
-        Regular glass ignores tintColor on macOS 27; clear glass takes it.
-        Plain states go back to regular, which is the more legible material
-        over arbitrary content.
-        """
+    # -- status glow ------------------------------------------------------
+    def _apply_glow(self, label: str) -> None:
+        """Colour the halo around the glass, leaving the material clear."""
         if self._glass is None:
             return
-        key = _tint_key(label)
+        layer = self._glass.layer()
+        if layer is None:
+            return
+        key = _status_key(label)
         try:
+            self._glass.setTintColor_(None)
             self._glass.setStyle_(NSGlassEffectViewStyleClear if key
                                   else NSGlassEffectViewStyleRegular)
-            self._glass.setTintColor_(_tint_color(key) if key else None)
+            if key:
+                layer.setShadowColor_(_GLOW_COLORS[key]().CGColor())
+                layer.setShadowOffset_((0, 0))
+                layer.setShadowRadius_(_GLOW_RADIUS)
+                layer.setShadowOpacity_(_GLOW_OPACITY)
+            else:
+                layer.setShadowOpacity_(0)
         except Exception as exc:
-            self._log(f"pill tint failed: {exc}")
+            self._log(f"pill glow failed: {exc}")
 
     def _high_contrast(self) -> bool:
         try:
@@ -197,15 +187,13 @@ class PillWindow:
         except Exception:
             return False
 
-    def _system_ink(self, label: str = "") -> dict:
+    def _system_ink(self) -> dict:
         """Live system colours, resolved to RGB for the shared renderer.
 
-        AppKit's dynamic colours carry light/dark and accessibility variants.
-        When the material is tinted for a status, the label and bars switch to
-        black or white — whichever reads against that bright tint.
+        The glass is never tinted now — status lives in the surrounding glow —
+        so the label keeps the ordinary dynamic system colours in every state.
         """
-        tint = _tint_key(label)
-        key = (self._theme, self._high_contrast(), tint)
+        key = (self._theme, self._high_contrast())
         if key in _INK_CACHE:
             return _INK_CACHE[key]
 
@@ -224,22 +212,17 @@ class PillWindow:
 
         try:
             NSAppearance.setCurrentAppearance_(wanted)
-            if tint:
-                same = _contrast_ink(rgb(_tint_color(tint)))
-                ink = {name: same for name in
-                       ("fg", "muted", "accent", "green", "red")}
-            else:
-                # In Increase Contrast, secondaryLabelColor can lose the
-                # separation the muted role needs; labelColor is the safe one.
-                muted = (NSColor.labelColor() if key[1]
-                         else NSColor.secondaryLabelColor())
-                ink = {
-                    "fg": rgb(NSColor.labelColor()),
-                    "muted": rgb(muted),
-                    "accent": rgb(NSColor.systemOrangeColor()),
-                    "green": rgb(NSColor.systemGreenColor()),
-                    "red": rgb(NSColor.systemRedColor()),
-                }
+            # In Increase Contrast, secondaryLabelColor can lose the
+            # separation the muted role needs; labelColor is the safe one.
+            muted = (NSColor.labelColor() if key[1]
+                     else NSColor.secondaryLabelColor())
+            ink = {
+                "fg": rgb(NSColor.labelColor()),
+                "muted": rgb(muted),
+                "accent": rgb(NSColor.systemOrangeColor()),
+                "green": rgb(NSColor.systemGreenColor()),
+                "red": rgb(NSColor.systemRedColor()),
+            }
         finally:
             try:
                 NSAppearance.setCurrentAppearance_(previous)
@@ -262,7 +245,8 @@ class PillWindow:
 
     def _build(self) -> None:
         NSApplication.sharedApplication()
-        frame = NSMakeRect(0, 0, W, H)
+        frame = NSMakeRect(0, 0, _WW, _HH)
+        pill_frame = NSMakeRect(_PAD, _PAD, W, H)
         window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             frame, NSWindowStyleMaskBorderless, NSBackingStoreBuffered, False)
         window.setOpaque_(False)
@@ -272,20 +256,25 @@ class PillWindow:
         window.setLevel_(NSStatusWindowLevel)
         window.setCollectionBehavior_(_BEHAVIOUR)
         window.setHidesOnDeactivate_(False)
-        view = NSImageView.alloc().initWithFrame_(frame)
+        container = NSView.alloc().initWithFrame_(frame)
+        container.setWantsLayer_(True)
+        view = NSImageView.alloc().initWithFrame_(NSMakeRect(0, 0, W, H))
         self._glass = None
         if _glass_available(self._glass_enabled):
-            glass = NSGlassEffectView.alloc().initWithFrame_(frame)
+            glass = NSGlassEffectView.alloc().initWithFrame_(pill_frame)
             glass.setStyle_(NSGlassEffectViewStyleRegular)
             glass.setCornerRadius_(float(R))
-            # No tint: the regular material follows the user's Liquid Glass
-            # setting, the backdrop, and the accessibility preferences.
+            glass.setWantsLayer_(True)
+            # The material stays clear; colour lives in the halo outside it.
+            glass.setTintColor_(None)
             glass.setContentView_(view)
-            window.setContentView_(glass)
+            container.addSubview_(glass)
             self._glass = glass
-            self._apply_tint(self._label)
+            self._apply_glow(self._label)
         else:
-            window.setContentView_(view)
+            view.setFrame_(pill_frame)
+            container.addSubview_(view)
+        window.setContentView_(container)
         self._window = window
         self._view = view
         self._tick = _Tick.alloc().initWithOwner_(self)
@@ -329,7 +318,7 @@ class PillWindow:
             scale = max(1, int(round(self._window.backingScaleFactor() or 2)))
             frame = render(label, self._phase, hist, scale=scale,
                            glass=self._glass is not None, theme=self._theme,
-                           ink=self._system_ink(label),
+                           ink=self._system_ink(),
                            contrast=self._high_contrast())
             self._view.setImage_(_nsimage(frame))
         except Exception as exc:
@@ -347,10 +336,11 @@ class PillWindow:
                 screen = candidate
                 break
         vis = screen.visibleFrame()
-        x = vis.origin.x + (vis.size.width - W) / 2
+        # Centre the visible pill; the extra padding only holds the glow.
+        x = vis.origin.x + (vis.size.width - W) / 2 - _PAD
         # 88 points above the Dock, matching the Windows work-area inset.
-        y = vis.origin.y + 88
-        self._window.setFrame_display_(NSMakeRect(x, y, W, H), False)
+        y = vis.origin.y + 88 - _PAD
+        self._window.setFrame_display_(NSMakeRect(x, y, _WW, _HH), False)
 
 
 def _nsimage(pil) -> NSImage:

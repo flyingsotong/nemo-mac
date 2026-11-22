@@ -459,10 +459,14 @@ the material and tinted it with fixed colours. Apple's Materials and Color guida
 says to let Liquid Glass supply the surface and use system colours. The fill and
 the fixed tint are gone. Glass mode paints no surface at all; the label ink is
 resolved from dynamic AppKit colours under the current appearance, with a
-high-contrast variant for the solid fallback. Status uses a translucent system
-tint (alpha 0.28) on `NSGlassEffectViewStyleClear`: orange listening, green
-Copied, red errors. Regular glass ignores `tintColor` on macOS 27, which is why
-the first tint attempt looked gray.
+high-contrast variant for the solid fallback. Tinting the material was tried
+and rejected: regular glass ignores `tintColor` on macOS 27, clear glass takes
+it but fills in as a flat block, and a translucent tint still went muddy over a
+dark backdrop. Status now lives in a coloured shadow around a clear glass view:
+orange listening, green Copied, red errors. The window is padded by 28 pt so the
+halo is not clipped, and the glass view sits inside a container view — setting
+it directly as the window's content view makes AppKit resize it to the whole
+window, which puts the glow at the window edge.
 
 The pill is 220 x 54 pt, down from 252. The dot is gone; the label starts at
 x=18 and the waveform sits at the right inset. Non-waveform states use the full
@@ -471,9 +475,28 @@ is SF Pro Medium, set through the variable font's weight axis — SF at its defa
 axis value renders too thin in Pillow, which is why Helvetica had been used.
 
 Verification: every fallback ink/surface pair clears 4.5:1, glass is asserted to
-paint no surface, tint mapping and the empty left inset are pinned, both suites
-pass, and the Impeccable detector is clean. Material behaviour was checked by
-capturing the live pill and sampling pixels — untinted glass reads `(0,0,0)` over
-black and `(72,72,72)` over white; the tinted pill reads `(242,210,182)` over a
-white backdrop. The pill cannot use true AppKit vibrancy while its content is a
-Pillow image; the solid pill (`GLASS = false`) is the guaranteed-contrast path.
+paint no surface, the status-to-glow mapping and the empty left inset are pinned,
+both suites pass, and the Impeccable detector is clean. Material behaviour was
+checked by capturing the live pill and sampling pixels — untinted glass reads
+`(0,0,0)` over black and `(72,72,72)` over white; the glow reads `(252,234,219)`
+orange and `(226,244,226)` green around a clear centre of `(243,244,244)`. The
+pill cannot use true AppKit vibrancy while its content is a Pillow image; the
+solid pill (`GLASS = false`) is the guaranteed-contrast path.
+
+## Glow, 22 Nov 2026 (0.5)
+
+Tinting the material was a dead end. Regular glass ignores `tintColor` on macOS
+27; clear glass accepts it but fills in as a flat block; a translucent tint went
+muddy over a dark backdrop. Status now lives in a coloured layer shadow around
+a clear glass view, so the material is untouched: orange listening, green Copied,
+red errors, no glow for quiet states.
+
+Two implementation traps. The window needs 28 pt of padding or the halo is
+clipped. And the glass view must sit inside a container view — as the window's
+content view, AppKit resizes it to the whole window and the glow appears at the
+window edge instead of around the pill.
+
+Screenshots were recaptured from the live app: the hero and state sheet on a
+light desktop, the settings window from a real `SettingsWindow` instance, and
+the social/Open Graph cards from the same captures. All `docs/` images are
+derived from the shipped renderer, not mocked up in a design tool.

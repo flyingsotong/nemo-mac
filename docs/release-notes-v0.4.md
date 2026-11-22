@@ -52,9 +52,9 @@ without a restart.
   dynamic AppKit colours (`labelColor`, `secondaryLabelColor` and the system
   status colours) under the current appearance. The pill no longer freezes a
   hand-picked palette into the image.
-- **Status colour.** Listening tints the whole material orange, Copied green,
-  errors red. The tint is translucent — it is coloured glass, not a block of
-  paint. Quiet states return to the plain material.
+- **Status colour.** Listening casts a soft orange glow around the glass,
+  Copied green, errors red. The material itself stays clear; the colour is a
+  halo outside it rather than a tint inside it.
 - **Narrower and quieter.** 220 pt wide instead of 252. The dot is gone; the
   waveform is the live signal, and the label sits at the left inset with room
   around it.
@@ -76,9 +76,10 @@ and [Color](https://developer.apple.com/design/human-interface-guidelines/color)
 guidelines: the material supplies the surface, colour is used sparingly for
 status, and custom colours have accessible variants.
 
-One macOS 27 detail worth recording: regular glass ignores `tintColor`, so the
-status states switch to clear glass with a translucent system tint. Untinted
-states stay on regular glass, which is more legible over arbitrary content.
+One macOS 27 detail worth recording: regular glass ignores `tintColor`. Rather
+than force a tint onto the material, status now lives in a coloured shadow
+around a clear glass view — the material itself is untouched. Quiet states use
+regular glass, which is more legible over arbitrary content.
 
 ## Verification
 
@@ -87,10 +88,11 @@ states stay on regular glass, which is more legible over arbitrary content.
 - Every solid fallback ink/surface pair clears 4.5:1, including the Increase
   Contrast surfaces.
 - Tests pin that glass mode paints no surface, that the dot is gone, that the
-  tint mapping is correct, and that the tint stays translucent.
+  status colour mapping is correct, and that the window has room for the glow.
 - Material behaviour was checked by capturing the live pill and sampling pixels:
   untinted glass reads `(0,0,0)` over black and `(72,72,72)` over white; the
-  tinted pill reads `(242,210,182)` over a white backdrop.
+  glow reads `(252,234,219)` orange and `(226,244,226)` green around a clear
+  centre of `(243,244,244)`.
 - The Impeccable design detector reported no findings.
 
 The pill is drawn with Pillow, so its text uses resolved system colours rather

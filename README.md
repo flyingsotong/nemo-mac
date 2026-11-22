@@ -6,8 +6,8 @@ Hold **Right Command**, speak, let go. The text appears where your cursor is, in
 about a third of a second, entirely on this machine. No account, no cloud, no
 telemetry, no history on disk.
 
-Release notes: [0.4](docs/release-notes-v0.4.md),
-[0.2](docs/release-notes-v0.2.md).
+Release notes: [0.5](docs/release-notes-v0.5.md),
+[0.4](docs/release-notes-v0.4.md), [0.2](docs/release-notes-v0.2.md).
 
 ![The pill while listening](docs/hero.png)
 
@@ -106,10 +106,10 @@ Three decisions worth knowing:
 microphone, the model, the encoder window, keep-warm, the silence gate and a
 vocabulary editor. Appearance follows macOS by default; Light and Dark pin it.
 The glass pill uses the system material and system colours, so it follows your
-Liquid Glass setting, accent and accessibility options. Listening tints the
-material orange, Copied green and errors red; the waveform carries the live
-signal, so there is no separate dot. For guaranteed contrast on any backdrop,
-switch **Liquid Glass pill** off.
+Liquid Glass setting, accent and accessibility options. Listening casts a soft
+orange glow around the glass, Copied green and errors red — the material itself
+stays clear. The waveform carries the live signal, so there is no separate dot.
+For guaranteed contrast on any backdrop, switch **Liquid Glass pill** off.
 
 ![The settings window](docs/settings.png) Changes apply as you make them; the engine restarts only for
 the settings that need it.
