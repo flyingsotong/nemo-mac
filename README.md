@@ -9,7 +9,7 @@ telemetry, no history on disk.
 Release notes: [0.5](docs/release-notes-v0.5.md),
 [0.4](docs/release-notes-v0.4.md), [0.2](docs/release-notes-v0.2.md).
 
-![The pill while listening](docs/hero.png)
+![The pill while listening](docs/hero.png?v=2)
 
 Whisper `large-v3-turbo` runs on Metal through a resident `whisper-server`, so the
 model is never loaded on the critical path. Audio goes to `127.0.0.1:8129` and
@@ -34,7 +34,7 @@ ignored.
 The pill appears on whichever screen holds the pointer, and the menu bar icon turns
 **orange** while the microphone is open:
 
-![Menu bar icon, idle and listening](docs/menubar-icon.png)
+![Menu bar icon, idle and listening](docs/menubar-icon.png?v=2)
 
 | Pill | Meaning |
 |---|---|
@@ -45,13 +45,13 @@ The pill appears on whichever screen holds the pointer, and the menu bar icon tu
 | **No mic audio** | the microphone returned digital silence; the device is reopened before your next press |
 | **Paused** | dictation is off, and the key reaches the app normally |
 
-![Every pill state](docs/pill-states.png)
+![Every pill state](docs/pill-states.png?v=2)
 
 The menu stays short: what is doing the work, the microphone by name, pause, the
 last transcript, Settings, and Quit. Everything that used to be a menu item —
 vocabulary, login, permissions, reload — lives in the window now:
 
-![The menu](docs/menu.png)
+![The menu](docs/menu.png?v=2)
 
 ## How fast
 
@@ -111,7 +111,7 @@ orange glow around the glass, Copied green and errors red — the material itsel
 stays clear. The waveform carries the live signal, so there is no separate dot.
 For guaranteed contrast on any backdrop, switch **Liquid Glass pill** off.
 
-![The settings window](docs/settings.png) Changes apply as you make them; the engine restarts only for
+![The settings window](docs/settings.png?v=2) Changes apply as you make them; the engine restarts only for
 the settings that need it.
 
 Everything lives in `config.json` under `~/Library/Application Support/Nemo/`, so
