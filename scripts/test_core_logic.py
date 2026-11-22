@@ -18,6 +18,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import numpy as np  # noqa: E402
 
 import nemo  # noqa: E402
+from overlay_render import HC_SURFACES, PALETTES, _font_candidates, render  # noqa: E402
+
+if sys.platform == "darwin":
+    from nemo_platform.macos.pill import _contrast_ink, _tint_color, _tint_key  # noqa: E402
+    from nemo_platform.macos.theme import normalise, resolve  # noqa: E402
 
 # Keep the app's own log clean: a test run must not look like use.
 nemo.LOGFILE = Path(tempfile.gettempdir()) / "nemo-test.log"
@@ -26,6 +31,20 @@ nemo.LOGFILE = Path(tempfile.gettempdir()) / "nemo-test.log"
 def check(name: str, passed: bool, detail: str = "") -> bool:
     print(("PASS  " if passed else "FAIL  ") + name + (f"  [{detail}]" if detail and not passed else ""))
     return passed
+
+
+def _lin(c: float) -> float:
+    c /= 255.0
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def _lum(rgb) -> float:
+    return 0.2126 * _lin(rgb[0]) + 0.7152 * _lin(rgb[1]) + 0.0722 * _lin(rgb[2])
+
+
+def _contrast(a, b) -> float:
+    la, lb = _lum(a), _lum(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
 
 
 def main() -> int:
@@ -146,6 +165,51 @@ def main() -> int:
         ok &= check("no vocabulary means no change",
                     nemo.apply_vocabulary("notes on Tellaria") == "notes on Tellaria"
                     if not vocab.exists() else True)
+
+        # --- solid fallback palettes ----------------------------------------
+        for name, palette in PALETTES.items():
+            surfaces = [palette.bg_top, palette.bg_bottom,
+                        HC_SURFACES[name][0], HC_SURFACES[name][1]]
+            for role in ("fg", "muted", "accent", "green", "red"):
+                ink = getattr(palette, role)
+                worst = min(_contrast(ink, surface) for surface in surfaces)
+                ok &= check(f"{name} {role} clears 4.5:1 on every surface",
+                            worst >= 4.5, f"{worst:.2f}")
+        frames = [render("listening", 0.0, [0.5] * 9, glass=glass, theme=theme)
+                  for glass in (False, True) for theme in ("light", "dark")]
+        ok &= check("themes and glass modes keep the same geometry",
+                    all(f.size == frames[0].size for f in frames))
+        ok &= check("light and dark are genuinely different images",
+                    frames[0].tobytes() != frames[2].tobytes())
+        # frames: solid-light, solid-dark, glass-light, glass-dark.
+        glass = frames[2]
+        corners = [glass.getpixel(p) for p in
+                   ((0, 0), (glass.width - 1, 0),
+                    (0, glass.height - 1),
+                    (glass.width - 1, glass.height - 1))]
+        ok &= check("glass paints no surface of its own",
+                    all(pixel[3] == 0 for pixel in corners), str(corners))
+        ok &= check("the dot is gone from the left inset",
+                    all(glass.getpixel((8, y))[3] == 0
+                        for y in range(glass.height)))
+        if sys.platform == "darwin":
+            ok &= check("listening tints the material orange",
+                        _tint_key("listening") == "orange")
+            ok &= check("done tints the material green",
+                        _tint_key("done") == "green")
+            ok &= check("quiet states keep the plain material",
+                        _tint_key("paused") is None and _tint_key("hint:Hi") is None)
+            ok &= check("bright status tint takes dark ink",
+                        _contrast_ink((247, 133, 35)) == (0, 0, 0))
+            ok &= check("dark material takes light ink",
+                        _contrast_ink((20, 24, 30)) == (255, 255, 255))
+            ok &= check("status tint is translucent",
+                        0 < _tint_color("orange").alphaComponent() < 1)
+            ok &= check("the Mac pill uses SF Pro first",
+                        _font_candidates()[0].endswith("SFNS.ttf"))
+            ok &= check("a junk theme follows the system", normalise("sidebar") == "system")
+            ok &= check("resolve never returns system", resolve("system") in ("light", "dark"))
+            ok &= check("resolve honours a pinned theme", resolve("light") == "light")
 
         # --- microphone listing ---------------------------------------------
         choices = nemo.mic_choices()

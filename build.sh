@@ -45,10 +45,10 @@ PLIST="$APP/Contents/Info.plist"
 echo "==> Info.plist"
 /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$PLIST" 2>/dev/null \
   || /usr/libexec/PlistBuddy -c "Set :LSUIElement true" "$PLIST"
-/usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string 'Nemo records while you hold Right Option, and transcribes on this Mac.'" "$PLIST" 2>/dev/null \
-  || /usr/libexec/PlistBuddy -c "Set :NSMicrophoneUsageDescription 'Nemo records while you hold Right Option, and transcribes on this Mac.'" "$PLIST"
-/usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string 0.2" "$PLIST" 2>/dev/null \
-  || /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 0.2" "$PLIST"
+/usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string 'Nemo records while you hold Right Command, and transcribes on this Mac.'" "$PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Set :NSMicrophoneUsageDescription 'Nemo records while you hold Right Command, and transcribes on this Mac.'" "$PLIST"
+/usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string 0.4" "$PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 0.4" "$PLIST"
 
 echo "==> engine"
 # Homebrew's, not bundled: whisper-server links libwhisper and the ggml dylibs by

@@ -6,6 +6,9 @@ Hold **Right Command**, speak, let go. The text appears where your cursor is, in
 about a third of a second, entirely on this machine. No account, no cloud, no
 telemetry, no history on disk.
 
+Release notes: [0.4](docs/release-notes-v0.4.md),
+[0.2](docs/release-notes-v0.2.md).
+
 ![The pill while listening](docs/hero.png)
 
 Whisper `large-v3-turbo` runs on Metal through a resident `whisper-server`, so the
@@ -101,7 +104,12 @@ Three decisions worth knowing:
 
 **Menu → Settings…** opens the window: hotkey, mode, language, appearance, the
 microphone, the model, the encoder window, keep-warm, the silence gate and a
-vocabulary editor.
+vocabulary editor. Appearance follows macOS by default; Light and Dark pin it.
+The glass pill uses the system material and system colours, so it follows your
+Liquid Glass setting, accent and accessibility options. Listening tints the
+material orange, Copied green and errors red; the waveform carries the live
+signal, so there is no separate dot. For guaranteed contrast on any backdrop,
+switch **Liquid Glass pill** off.
 
 ![The settings window](docs/settings.png) Changes apply as you make them; the engine restarts only for
 the settings that need it.
@@ -121,6 +129,7 @@ it is still a text file if you prefer one — the window writes it, and the
 | `PASTE` | `true` | `false` is clipboard only |
 | `TRAILING_SPACE` | `true` | so two dictations do not run together |
 | `GLASS` | `true` | Liquid Glass pill, or the painted one |
+| `THEME` | `"system"` | `"system"`, `"light"` or `"dark"` — pill and window appearance |
 | `MIN_PEAK` | `0.025` | silence gate; learns from your takes |
 | `AUDIO_CTX` | `640` | encoder window, in 20 ms frames |
 | `KEEP_WARM_SEC` | `300` | silent inference while idle; stretched on battery |
@@ -149,8 +158,8 @@ term four tokens from the end has no effect at all.
 
 ## Not in this version
 
-Spoken formatting ("new line", "new paragraph"), a microphone picker, engine swaps
-(Core ML, MLX), any cloud path, history on disk.
+Spoken formatting ("new line", "new paragraph"), engine swaps (Core ML, MLX),
+any cloud path, history on disk.
 
 ## Licence
 

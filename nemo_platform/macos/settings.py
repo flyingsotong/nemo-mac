@@ -131,6 +131,11 @@ class SettingsWindow(NSObject):
     def fill_tab(self, title: str, view) -> None:
         y = 330
         if title == "General":
+            self.make_label(view, "Appearance", y)
+            self.make_popup(view, "THEME", [("Follow system", "system"),
+                                            ("Light", "light"),
+                                            ("Dark", "dark")], y)
+            y -= ROW_H
             self.make_label(view, "Hotkey", y)
             self.make_popup(view, "HOTKEY", [("Right Command", "right_command"),
                                         ("Right Option", "right_option")], y)
@@ -157,7 +162,7 @@ class SettingsWindow(NSObject):
             self.make_label(view, "Start at login", y)
             self.make_switch(view, "START_AT_LOGIN", y)
             self.make_note(view, "Swallowing the hotkey is what stops it reaching the "
-                             "app you are dictating into.", 40)
+                             "app you are dictating into.", 14)
 
         elif title == "Audio":
             self.make_label(view, "Microphone", y)
@@ -220,6 +225,7 @@ class SettingsWindow(NSObject):
     def refresh_values(self) -> None:
         import nemo
         values = {
+            "THEME": nemo.THEME,
             "HOTKEY": nemo.HOTKEY,
             "DICTATION_MODE": nemo.DICTATION_MODE,
             "LANGUAGE": nemo.LANGUAGE,

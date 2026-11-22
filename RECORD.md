@@ -446,3 +446,34 @@ pane. Dictation into a secure field cannot work, on any Mac, by design.
 | real take, 15.4 s, after widening to 800 | 600 ms |
 | first inference after start | 797 ms, absorbed by keep-warm |
 | CPU encode, same 4.7 s clip | 8.1 s |
+
+## Appearance, 22 Nov 2026
+
+The pill had one hard-coded dark palette. In macOS light appearance the glass
+material stayed light while the ink was near-white, so the text was illegible.
+`THEME` now resolves to `system`, `light` or `dark`, applies an AppKit appearance
+app-wide, and observes `AppleInterfaceThemeChangedNotification`.
+
+What the HIG check changed: the first fix painted a near-opaque themed fill over
+the material and tinted it with fixed colours. Apple's Materials and Color guidance
+says to let Liquid Glass supply the surface and use system colours. The fill and
+the fixed tint are gone. Glass mode paints no surface at all; the label ink is
+resolved from dynamic AppKit colours under the current appearance, with a
+high-contrast variant for the solid fallback. Status uses a translucent system
+tint (alpha 0.28) on `NSGlassEffectViewStyleClear`: orange listening, green
+Copied, red errors. Regular glass ignores `tintColor` on macOS 27, which is why
+the first tint attempt looked gray.
+
+The pill is 220 x 54 pt, down from 252. The dot is gone; the label starts at
+x=18 and the waveform sits at the right inset. Non-waveform states use the full
+width, which is what keeps the 187 pt first-run hint inside the pill. Lettering
+is SF Pro Medium, set through the variable font's weight axis — SF at its default
+axis value renders too thin in Pillow, which is why Helvetica had been used.
+
+Verification: every fallback ink/surface pair clears 4.5:1, glass is asserted to
+paint no surface, tint mapping and the empty left inset are pinned, both suites
+pass, and the Impeccable detector is clean. Material behaviour was checked by
+capturing the live pill and sampling pixels — untinted glass reads `(0,0,0)` over
+black and `(72,72,72)` over white; the tinted pill reads `(242,210,182)` over a
+white backdrop. The pill cannot use true AppKit vibrancy while its content is a
+Pillow image; the solid pill (`GLASS = false`) is the guaranteed-contrast path.

@@ -1,6 +1,7 @@
 """Show the pill in a given state, capture the screen, exit.
 
 Run:  .venv/bin/python scripts/pill_shot.py "hint:Hold Right Command to talk" /tmp/pill.png
+Optional third argument: system, light or dark.
 Needs Screen Recording for the process, or the capture is a blank image.
 """
 from __future__ import annotations
@@ -22,7 +23,8 @@ def main() -> int:
     out = Path(sys.argv[2] if len(sys.argv) > 2 else "/tmp/pill.png")
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
-    pill = PillWindow(log=lambda m: print(m, flush=True))
+    theme = sys.argv[3] if len(sys.argv) > 3 else "system"
+    pill = PillWindow(log=lambda m: print(m, flush=True), theme=theme)
     pill.start()
     pill.state(label)
 

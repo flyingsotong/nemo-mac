@@ -44,7 +44,7 @@ VOCAB_FILE = ROOT / "vocabulary.txt"
 VOCAB_MAX_CHARS = 600     # whisper's prompt window is small; stay well inside it
 
 APP_NAME = "Nemo"
-APP_VERSION = "0.3"
+APP_VERSION = "0.4"
 
 # ---- knobs ----------------------------------------------------------------
 HOTKEY_VK = 0xA5          # Windows: Right Alt (VK_RMENU)
@@ -52,10 +52,13 @@ HOTKEY_VK = 0xA5          # Windows: Right Alt (VK_RMENU)
 # is the default because that is where the hand already is; either is one config
 # line away.
 HOTKEY = "right_command"
-# macOS only: draw the pill on the system's Liquid Glass material instead of a
-# painted gradient. Cosmetic; costs no frame time (the renderer skips the
-# background). Set false for the original solid pill.
+# macOS only: draw the pill on the system's Liquid Glass material, whose own
+# styling adapts to appearance, backdrop and accessibility. Set false for a
+# solid, painted pill with guaranteed contrast instead.
 GLASS = True
+# Appearance of the pill and the AppKit windows. "system" follows macOS;
+# "light" and "dark" pin it even when macOS says otherwise.
+THEME = "system"
 SUPPRESS_HOTKEY = True    # stop Right Alt reaching the focused app (menus / AltGr)
 LANGUAGE = "en"           # set to "" for auto-detect
 THREADS = 4          # performance cores on this chip
@@ -128,7 +131,7 @@ _OVERRIDABLE = {"HOTKEY_VK", "SUPPRESS_HOTKEY", "LANGUAGE", "THREADS", "PORT",
                 "SAMPLE_RATE", "MIC_DEVICE", "MIN_SECONDS", "MIN_PEAK",
                 "PASTE", "BEEP", "OVERLAY", "DICTATION_MODE", "TRAILING_SPACE",
                 "MODEL_FILE", "KEEP_WARM_SEC", "SILENT_PEAK", "AUDIO_CTX", "HOTKEY",
-                "GLASS"}
+                "GLASS", "THEME"}
 
 
 def reload_config() -> bool:
@@ -1822,12 +1825,24 @@ def main() -> int:
             emit(f"Accessibility is not granted. Tick: {running_identity()}")
         request_microphone()
 
+    appearance = None
+    if sys.platform == "darwin":
+        from nemo_platform.macos import theme as appearance
+        appearance.apply(THEME)
+
     overlay = None
     if Overlay is None:
         log(f"overlay unavailable, running silently: {_OVERLAY_ERROR}")
     elif OVERLAY:
-        overlay = Overlay(log=log, glass=GLASS)
+        # The Windows overlay keeps its original signature; only the Mac pill
+        # takes a theme.
+        if appearance is not None:
+            overlay = Overlay(log=log, glass=GLASS, theme=THEME)
+        else:
+            overlay = Overlay(log=log)
         overlay.start()
+        if appearance is not None:
+            appearance.observe(lambda: overlay.theme_changed())
 
     if Tray is None:
         # without the tray there is no way to quit or change settings from the
@@ -1883,6 +1898,10 @@ def main() -> int:
         language or thread count actually takes effect."""
         if not reload_config():
             return False
+        if appearance is not None:
+            appearance.apply(THEME)
+            if overlay is not None:
+                overlay.theme_changed()
         try:
             server.shutdown()
             server.ensure()
@@ -1929,6 +1948,11 @@ def main() -> int:
                 elif key == "MIC_DEVICE":
                     app.device = resolve_device(MIC_DEVICE)
                     app._needs_reopen = True
+                elif key == "THEME" and appearance is not None:
+                    appearance.apply(THEME)
+                    if overlay is not None:
+                        overlay.theme_changed()
+                    log(f"theme -> {THEME} ({appearance.resolve(THEME)})")
                 elif key in ("HOTKEY", "GLASS", "OVERLAY"):
                     log(f"{key} takes effect the next time Nemo starts")
 
