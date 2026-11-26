@@ -79,6 +79,10 @@ SILENT_PEAK = 0.0005
 # cold-start cost while someone is waiting. 0 disables. On battery the Mac
 # build stretches this; see keep_warm_interval().
 KEEP_WARM_SEC = 300
+# On battery keep-warm stretches to 900 s, so the first take after a break can
+# still pay ~200 ms to wake the GPU. At key-down, start that work while the mic
+# is opening. Long enough that a normal in-session press never fires it.
+WARM_ON_PRESS_IDLE = 60.0
 # Encoder window, in 20 ms frames. Whisper always encodes a fixed window; 1500
 # frames is the 30 s default and 640 is 12.8 s. This is a *server* setting, not a
 # per-request field: measured on this build, varying audio_ctx between requests
@@ -1252,22 +1256,27 @@ def keep_warm_interval() -> float:
     return base
 
 
-def keep_warm_once(server: "Server") -> None:
-    """One silent 0.4 s inference. Never called while a take is open."""
+def keep_warm_once(server: "Server", label: str = "keep-warm",
+                   seconds: float = 0.4) -> None:
+    """One silent inference. Never called while a take is open.
+
+    The label keeps the timer's existing log lines byte-identical, so a year of
+    keep-warm history stays comparable; key-down warm-ups get their own line.
+    """
     if not server.ensure(wait=30):
         return
-    pcm = np.zeros(int(SAMPLE_RATE * 0.4), dtype=np.int16)
+    pcm = np.zeros(int(SAMPLE_RATE * seconds), dtype=np.int16)
     t0 = time.perf_counter()
     try:
         server.transcribe(pcm_to_wav(pcm))
     except Exception as exc:
-        log(f"keep-warm failed: {exc}")
+        log(f"{label} failed: {exc}")
         return
     ms = (time.perf_counter() - t0) * 1000
     if ms > SLOW_MS:
-        log(f"keep-warm absorbed a cold take ({ms:.0f}ms)")
+        log(f"{label} absorbed a cold take ({ms:.0f}ms)")
     else:
-        log(f"keep-warm {ms:.0f}ms")
+        log(f"{label} {ms:.0f}ms")
 
 
 def keep_warm_loop(app: "Nemo", stop: threading.Event) -> None:
@@ -1315,6 +1324,7 @@ class Nemo:
         self._paused = threading.Event()
         self._needs_reopen = False
         self._last_take_at = time.time()
+        self._last_warm_at = 0.0
         self.on_state = None      # set by main() to drive the menu bar icon
 
     @property
@@ -1397,6 +1407,20 @@ class Nemo:
             self._state("error")
             beep("error")
             self.recorder.cancel()
+            return
+        # A long idle on battery stretches keep-warm to 15 minutes, so the first
+        # take after a break still pays ~200 ms to wake the GPU. Start that work
+        # here, on a thread, while he is speaking: the tap must never wait on it.
+        # Long idle guard keeps an in-session press from firing a second warm.
+        now = time.time()
+        if (now - self._last_take_at > WARM_ON_PRESS_IDLE
+                and now - self._last_warm_at > WARM_ON_PRESS_IDLE):
+            self._last_warm_at = now
+            threading.Thread(
+                target=keep_warm_once,
+                args=(self.server, "key-down warm", 0.2),
+                name="key-down-warm", daemon=True,
+            ).start()
 
     def release(self) -> None:
         """Stop and transcribe. No-op when nothing is recording, which is the
