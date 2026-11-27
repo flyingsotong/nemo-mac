@@ -44,7 +44,7 @@ VOCAB_FILE = ROOT / "vocabulary.txt"
 VOCAB_MAX_CHARS = 600     # whisper's prompt window is small; stay well inside it
 
 APP_NAME = "Nemo"
-APP_VERSION = "0.5"
+APP_VERSION = "0.6"
 
 # ---- knobs ----------------------------------------------------------------
 HOTKEY_VK = 0xA5          # Windows: Right Alt (VK_RMENU)

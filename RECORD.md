@@ -500,3 +500,32 @@ Screenshots were recaptured from the live app: the hero and state sheet on a
 light desktop, the settings window from a real `SettingsWindow` instance, and
 the social/Open Graph cards from the same captures. All `docs/` images are
 derived from the shipped renderer, not mocked up in a design tool.
+
+## Warm on key-down, 26 Nov 2026 (0.6)
+
+A hardware review of three weeks of `nemo.log` — 187 takes — put the fixed-window
+fast path at 248 ms median over 94 takes, with 1–4 ms on the output side. The
+tail was not hardware: 61 takes at a widened window cost a median 520 ms, and a
+repetition retry restarted the server for about a second. The one hiccup in
+ordinary use was the first take after long idle, about 460 ms against a 230 ms
+warm baseline, because on battery `keep_warm_interval()` stretches from 300 s to
+900 s.
+
+`press()` now fires the existing silent inference on a daemon thread when both
+the last take and the last warm-up are more than 60 s old. It uses a 0.2 s silent
+buffer so a fast dictation cannot queue behind much work. The timer path is
+unchanged; `keep_warm_once()` gained `label` and `seconds` arguments, with
+defaults that keep its old log lines byte-identical.
+
+Live confirmation on 26 Nov: `key-down warm 257ms` followed by takes at 231 ms
+and 241 ms. Both suites pass. Committed as `75aa833`, pushed to `main`, tagged
+`v0.6`. The version in `nemo.py` and `build.sh` moved to 0.6; the bundle was
+rebuilt and signed with the same identity, so the Accessibility and Microphone
+grants survived.
+
+Deliberately not in 0.6: per-request `audio_ctx`. Upstream v1.9.6 fixes the
+flash-attention padded-K/V bug that forced the fixed-window restart design, but
+Homebrew here still serves 1.9.5_2 and the fix was validated on CUDA, not Metal.
+A q8_0 model is also queued as an A/B — half the weights and effectively
+identical text in published tests, but only about 8% faster, so it does not
+justify a release on its own.

@@ -47,8 +47,8 @@ echo "==> Info.plist"
   || /usr/libexec/PlistBuddy -c "Set :LSUIElement true" "$PLIST"
 /usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string 'Nemo records while you hold Right Command, and transcribes on this Mac.'" "$PLIST" 2>/dev/null \
   || /usr/libexec/PlistBuddy -c "Set :NSMicrophoneUsageDescription 'Nemo records while you hold Right Command, and transcribes on this Mac.'" "$PLIST"
-/usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string 0.5" "$PLIST" 2>/dev/null \
-  || /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 0.5" "$PLIST"
+/usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string 0.6" "$PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 0.6" "$PLIST"
 
 echo "==> engine"
 # Homebrew's, not bundled: whisper-server links libwhisper and the ggml dylibs by
