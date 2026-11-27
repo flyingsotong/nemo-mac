@@ -406,11 +406,12 @@ class Recorder:
         self._close(blocking=False)
         if pcm.ndim > 1 and pcm.shape[1] > 1:
             pcm = pcm.mean(axis=1).astype(np.int16)
+        pcm = pcm.reshape(-1)
         if self._rate != SAMPLE_RATE and len(pcm):
             factor = self._rate / SAMPLE_RATE
             n_out = int(round(len(pcm) / factor))
             if abs(factor - 3.0) < 1e-9:  # exact 48k -> 16k decimation
-                pcm = pcm[: n_out * 3].reshape(-1, 3).mean(axis=1).astype(np.int16)
+                pcm = pcm[: (len(pcm) // 3) * 3].reshape(-1, 3).mean(axis=1).astype(np.int16)
             else:
                 idx = np.linspace(0, len(pcm) - 1, n_out)
                 pcm = np.interp(idx, np.arange(len(pcm)), pcm).astype(np.int16)
@@ -448,6 +449,7 @@ class Server:
         self._cpu_backend = ""
         self._accel = ""
         self.ac = 0
+        self._owned_ready = False
         self._adopted_pid: int | None = None
 
     @property
@@ -518,38 +520,39 @@ class Server:
         engine to widen it. Adoption still checks the model before trusting a
         server left behind by an earlier run.
         """
-        if self._listening():
-            if self.proc is None and not self._adopted_pid:
-                # Something is already serving our port: an engine left behind by
-                # a hard exit. Adopting it is cheap, but only if it is the engine
-                # this configuration asked for. A survivor serving a different
-                # model would make the menu name one model while another answers,
-                # which is the sort of confident wrong answer this app must not
-                # give. engine.json records what was started.
-                state = self._read_state()
-                if state.get("model") != MODEL.name:
-                    log(f"existing engine serves {state.get('model')!r}, "
-                        f"config wants {MODEL.name!r}; restarting it")
-                    self.shutdown()
-                else:
-                    self._adopted_pid = self._listen_pid()
-                    log(f"adopting existing engine (pid {self._adopted_pid or '?'}, "
-                        f"{MODEL.name}); windows are per request")
-            if self._listening():
-                return True
-        # If another thread is already starting it (tray reload during a
-        # dictation, say), wait for it to come up rather than serialising behind
-        # the lock for up to `wait` seconds.
-        if not self._lock.acquire(blocking=False):
-            deadline = time.time() + wait
-            while time.time() < deadline:
-                if self._listening():
-                    return True
-                time.sleep(0.15)
+        if not self._lock.acquire(timeout=wait):
             return False
         try:
             if self._listening():
-                return True
+                if self.proc is not None and self.proc.poll() is None:
+                    if not self._owned_ready and self._listen_pid() != self.proc.pid:
+                        log(f"port {self.port} occupied by an unverified listener")
+                        return False
+                    if not self._owned_ready:
+                        self._write_state(int(AUDIO_CTX))
+                        self._owned_ready = True
+                    return True
+                state = self._read_state()
+                pid = state.get("pid")
+                if not self._confirmed_listener(pid, state):
+                    self._adopted_pid = None
+                    log(f"port {self.port} occupied by an unverified listener")
+                    return False
+                adopted = self._adopted_pid == pid
+                self._adopted_pid = pid
+                if state.get("model") == MODEL.name:
+                    if not adopted:
+                        log(f"adopting existing engine (pid {pid}, "
+                            f"{MODEL.name}); windows are per request")
+                    return True
+                log(f"existing engine serves {state.get('model')!r}, "
+                    f"config wants {MODEL.name!r}; restarting it")
+                self._shutdown_locked()
+                if self._listening():
+                    log(f"port {self.port} still occupied after engine shutdown")
+                    return False
+            self._adopted_pid = None
+            self._owned_ready = False
             if not SERVER_EXE.exists():
                 log(f"missing {SERVER_EXE}")
                 return False
@@ -580,6 +583,10 @@ class Server:
                     log(f"server exited with {self.proc.returncode}")
                     return False
                 if self._listening():
+                    if self._listen_pid() != self.proc.pid:
+                        log(f"port {self.port} occupied by an unverified listener")
+                        return False
+                    self._owned_ready = True
                     self.ac = int(AUDIO_CTX)
                     self._write_state(self.ac)
                     log(f"server ready on port {self.port} (window {self.ac} frames, "
@@ -633,7 +640,8 @@ class Server:
 
     def _read_state(self) -> dict:
         try:
-            return json.loads(self._state_file().read_text(encoding="utf-8"))
+            state = json.loads(self._state_file().read_text(encoding="utf-8"))
+            return state if isinstance(state, dict) else {}
         except Exception:
             return {}
 
@@ -652,16 +660,42 @@ class Server:
     def _listen_pid(self) -> int | None:
         """PID of whatever holds our port. Only reliable on the Mac."""
         try:
-            out = subprocess.run(["lsof", "-ti", f"tcp:{self.port}", "-sTCP:LISTEN"],
+            out = subprocess.run(["lsof", "-nP", "-a", "-t", f"-i4TCP:{self.port}", "-sTCP:LISTEN"],
                                  capture_output=True, text=True, timeout=3)
-            for line in out.stdout.split():
-                if line.strip().isdigit():
-                    return int(line.strip())
+            pids = set(out.stdout.split())
+            if out.returncode == 0 and len(pids) == 1:
+                return int(pids.pop())
         except Exception:
             pass
         return None
 
+    def _confirmed_listener(self, pid, state: dict) -> bool:
+        if type(pid) is not int or pid <= 0 or state.get("pid") != pid or self._listen_pid() != pid:
+            return False
+        try:
+            # PID reuse alone must never make another program ours to signal.
+            exe = subprocess.check_output(
+                ["ps", "-p", str(pid), "-o", "comm="], text=True, timeout=2).strip()
+            if not SERVER_EXE.samefile(exe):
+                return False
+            # A new whisper-server can reuse a stale PID too. Check Nemo's
+            # launch arguments, including the model in the surviving record.
+            model = state.get("model")
+            if not isinstance(model, str) or not model:
+                return False
+            model_path = MODEL if model == MODEL.name else MODELS_DIR / model
+            command = subprocess.check_output(
+                ["ps", "-ww", "-p", str(pid), "-o", "command="], text=True, timeout=2)
+            prefix = f"{SERVER_EXE} -m {model_path} --host 127.0.0.1 --port {self.port} -t "
+            return command.lstrip().startswith(prefix)
+        except (OSError, subprocess.SubprocessError):
+            return False
+
     def shutdown(self) -> None:
+        with self._lock:
+            self._shutdown_locked()
+
+    def _shutdown_locked(self) -> None:
         if self.proc and self.proc.poll() is None:
             try:
                 self.proc.terminate()
@@ -674,15 +708,20 @@ class Server:
             return
         # An adopted engine is ours to stop too, or quitting leaves a 1.6 GB
         # process holding the port.
-        if self._adopted_pid:
-            try:
-                os.kill(self._adopted_pid, 15)
-                for _ in range(20):
-                    time.sleep(0.1)
-                    if not self._listening():
-                        break
-            except Exception:
-                pass
+        if not self._adopted_pid or not self._confirmed_listener(self._adopted_pid, self._read_state()):
+            self._adopted_pid = None
+            return
+        try:
+            os.kill(self._adopted_pid, 15)
+            for _ in range(20):
+                time.sleep(0.1)
+                if not self._listening():
+                    break
+            else:
+                return  # keep the record if termination could not be confirmed
+        except OSError:
+            return
+        finally:
             self._adopted_pid = None
         try:
             self._state_file().unlink()
@@ -1240,38 +1279,46 @@ def keep_warm_interval() -> float:
 
 
 def keep_warm_once(server: "Server", label: str = "keep-warm",
-                   seconds: float = 0.4) -> None:
-    """One silent inference. Never called while a take is open.
+                   seconds: float = 0.4) -> bool:
+    """One silent inference.
 
     The label keeps the timer's existing log lines byte-identical, so a year of
     keep-warm history stays comparable; key-down warm-ups get their own line.
     """
     if not server.ensure(wait=30):
-        return
+        return False
     pcm = np.zeros(int(SAMPLE_RATE * seconds), dtype=np.int16)
     t0 = time.perf_counter()
     try:
-        server.transcribe(pcm_to_wav(pcm))
+        server.transcribe(pcm_to_wav(pcm), ac=audio_context_frames(pcm))
     except Exception as exc:
         log(f"{label} failed: {exc}")
-        return
+        return False
     ms = (time.perf_counter() - t0) * 1000
     if ms > SLOW_MS:
         log(f"{label} absorbed a cold take ({ms:.0f}ms)")
     else:
         log(f"{label} {ms:.0f}ms")
+    return True
 
 
 def keep_warm_loop(app: "Nemo", stop: threading.Event) -> None:
-    last = 0.0
+    check_power_at = 0.0
+    retry_at = 0.0
+    interval = base = 0.0
     while not stop.wait(2.0):
         if app.recorder.active or app._busy.locked() or app.paused:
             continue
-        interval = keep_warm_interval()
-        if interval <= 0 or time.time() - last < interval:
+        minimum = float(KEEP_WARM_SEC or 0)
+        now = time.monotonic()
+        if minimum <= 0 or now < retry_at or now - app._last_inference < minimum:
             continue
-        keep_warm_once(app.server)
-        last = time.time()
+        if now >= check_power_at or minimum != base:
+            interval = keep_warm_interval()
+            base = minimum
+            check_power_at = now + 60
+        if app.warm_if_due(interval) is False:
+            retry_at = time.monotonic() + interval
 
 
 # ---- run at login ---------------------------------------------------------
@@ -1298,7 +1345,9 @@ class Nemo:
         self._paused = threading.Event()
         self._needs_reopen = False
         self._last_take_at = time.time()
-        self._last_warm_at = 0.0
+        self._started_at = time.monotonic()
+        self._last_inference = float("-inf")  # first timer tick warms the engine
+        self._warm_lock = threading.Lock()
         self.on_state = None      # set by main() to drive the menu bar icon
 
     @property
@@ -1359,7 +1408,26 @@ class Nemo:
         if self.overlay:
             self.overlay.state("say:" + text)
 
-    def press(self) -> None:
+    def warm_if_due(self, interval: float, key_down: bool = False) -> bool | None:
+        if not self._warm_lock.acquire(blocking=False):
+            return
+        try:
+            if self.paused or self._busy.locked() or (self.recorder.active and not key_down):
+                return
+            last = self._last_inference
+            if key_down:
+                last = max(last, self._started_at)
+            if time.monotonic() - last < interval:
+                return
+            label, seconds = ("key-down warm", 0.2) if key_down else ("keep-warm", 0.4)
+            if keep_warm_once(self.server, label, seconds):
+                self._last_inference = time.monotonic()
+                return True
+            return False
+        finally:
+            self._warm_lock.release()
+
+    def press(self, ended: threading.Event | None = None) -> None:
         """Begin recording. Safe to call when already recording (key auto-repeat)."""
         if self.paused or self.recorder.active:
             return
@@ -1369,11 +1437,16 @@ class Nemo:
             log("previous utterance still processing; press ignored")
             return
         if self._needs_reopen:
-            self._verify_mic()
-            self._needs_reopen = False
+            log("reopening microphone")
         try:
             on_level = self.overlay.level if self.overlay else None
             self.recorder.start(self.device, on_level)
+            if self.paused:
+                self.recorder.cancel()
+                return
+            if ended is not None and ended.is_set():
+                # The queued release (or Escape) owns the captured blocks.
+                return
             self._state("listening")
             beep("start")
         except Exception as exc:
@@ -1386,17 +1459,13 @@ class Nemo:
         # take after a break still pays ~200 ms to wake the GPU. Start that work
         # here, on a thread, while he is speaking: the tap must never wait on it.
         # Long idle guard keeps an in-session press from firing a second warm.
-        now = time.time()
-        if (now - self._last_take_at > WARM_ON_PRESS_IDLE
-                and now - self._last_warm_at > WARM_ON_PRESS_IDLE):
-            self._last_warm_at = now
+        if time.monotonic() - max(self._last_inference, self._started_at) >= WARM_ON_PRESS_IDLE:
             threading.Thread(
-                target=keep_warm_once,
-                args=(self.server, "key-down warm", 0.2),
+                target=self.warm_if_due, args=(WARM_ON_PRESS_IDLE, True),
                 name="key-down-warm", daemon=True,
             ).start()
 
-    def release(self) -> None:
+    def release(self, background: bool = False) -> None:
         """Stop and transcribe. No-op when nothing is recording, which is the
         normal case for a stray tap, an Esc cancel, or a refused press."""
         if not self.recorder.active:
@@ -1407,6 +1476,20 @@ class Nemo:
         try:
             pcm = self.recorder.stop()
             self._state("transcribing")
+            if background:
+                # Keep the ordered key worker available to reject busy presses.
+                threading.Thread(target=self._finish_release, args=(pcm,), daemon=True).start()
+                return
+        except Exception as exc:
+            log(f"release failed: {exc}")
+            self.recorder.cancel()
+            self._state("error")
+            self._busy.release()
+            return
+        self._finish_release(pcm)
+
+    def _finish_release(self, pcm) -> None:
+        try:
             self._finish(pcm)
         except Exception as exc:
             log(f"release failed: {exc}")
@@ -1415,29 +1498,11 @@ class Nemo:
         finally:
             self._busy.release()
 
-    def toggle(self) -> None:
+    def toggle(self, background: bool = False) -> None:
         if self.recorder.active:
-            self.release()
+            self.release(background=background)
         else:
             self.press()
-
-    def _verify_mic(self) -> bool:
-        """Reopen the device and confirm it can be opened. Called after digital
-        silence or a wake, before the next press is allowed to fail the same way."""
-        log("reopening microphone")
-        try:
-            probe = Recorder()
-            probe.start(self.device)
-            time.sleep(0.08)
-            pcm = probe.stop()
-            peak = 0.0
-            if pcm is not None and len(pcm):
-                peak = float(np.abs(pcm.astype(np.int32)).max()) / 32768.0
-            log(f"mic reopened (probe peak {peak:.4f})")
-            return True
-        except Exception as exc:
-            log(f"mic reopen failed: {exc}")
-            return False
 
     def _finish(self, pcm: np.ndarray | None) -> None:
         if pcm is None or len(pcm) < SAMPLE_RATE * MIN_SECONDS:
@@ -1446,6 +1511,9 @@ class Nemo:
             self._state("hidden")
             return
         peak = float(np.abs(pcm.astype(np.int32)).max()) / 32768.0
+        if self._needs_reopen:
+            log(f"mic reopened (take peak {peak:.4f})")
+            self._needs_reopen = False
         if peak < float(SILENT_PEAK):
             log(f"no mic audio (peak {peak:.4f}, silent {float(SILENT_PEAK):.4f})")
             self._needs_reopen = True
@@ -1473,6 +1541,7 @@ class Nemo:
         try:
             text, used = transcribe_guarded(
                 self.server, pcm_to_wav(pcm), vocabulary_prompt(), ac=need)
+            self._last_inference = time.monotonic()
             text = apply_vocabulary(text)
         except Exception as exc:
             log(f"transcribe failed: {exc}")
@@ -1985,7 +2054,7 @@ def main() -> int:
             if hasattr(listener, "reenable"):
                 listener.reenable()
             app._needs_reopen = True
-            threading.Thread(target=lambda: keep_warm_once(server), daemon=True).start()
+            threading.Thread(target=app.warm_if_due, args=(WARM_ON_PRESS_IDLE,), daemon=True).start()
 
         wake_observer = watch_wake(on_wake)
         warm_thread = threading.Thread(

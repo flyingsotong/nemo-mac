@@ -9,7 +9,8 @@ Run:  .venv/bin/python scripts/test_hotkey_logic.py
 from __future__ import annotations
 
 import sys
-import tempfile
+import threading
+from unittest.mock import Mock, patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -50,16 +51,71 @@ def _event_system_available() -> bool:
         return False
 
 
+def release_during_open(cancel: bool) -> bool:
+    import nemo
+    import numpy as np
+    import sounddevice as sd
+
+    app = nemo.Nemo(None, Mock(), None)
+    app._needs_reopen = True
+    states = []
+    app._state = states.append
+    opening = threading.Event()
+    resume = threading.Event()
+    stream = Mock()
+    block = np.arange(1024, dtype=np.int16)[:, None]
+
+    def open_stream(**options):
+        options["callback"](block, len(block), None, None)
+        return stream
+
+    def start():
+        opening.set()
+        if not resume.wait(2):
+            raise RuntimeError("test timed out waiting for release")
+    stream.start.side_effect = start
+    tap = listener(paused=False)
+    tap._on_hold = app.press
+    tap._on_release = app.release
+    tap._on_escape = app.cancel
+    kc, _, bit, _, mask = HOTKEYS[DEFAULT_HOTKEY]
+    with (patch.object(sd, "InputStream", side_effect=open_stream) as opens,
+          patch.object(app, "_finish", wraps=app._finish) as finish,
+          patch.object(nemo, "log"), patch.object(nemo, "beep"),
+          patch("nemo_platform.macos.hotkey._keycode", side_effect=lambda event: event[0]),
+          patch("nemo_platform.macos.hotkey._flags", side_effect=lambda event: event[1])):
+        try:
+            tap._dispatch(Quartz.kCGEventFlagsChanged, (kc, mask | bit))
+            if not opening.wait(2):
+                return False
+            if cancel:
+                tap._dispatch(Quartz.kCGEventKeyDown, (ESCAPE, 0))
+            tap._dispatch(Quartz.kCGEventFlagsChanged, (kc, 0))
+            resume.set()
+            tap._workers.submit(lambda: None).result(timeout=2)
+            app.recorder.wait_for_close()
+            preserved = not finish.called if cancel else np.array_equal(finish.call_args.args[0], block[:, 0])
+            return (preserved and opens.call_count == stream.close.call_count == 1 and not app.recorder.active
+                    and "listening" not in states and states[-1] == "hidden"
+                    and ("transcribing" in states) != cancel)
+        finally:
+            resume.set()
+            tap.stop()
+
+
 def main() -> int:
-    if not _event_system_available():
-        print("SKIP: no event system in this session (no window server)")
-        return 0
     failures = []
 
     def check(name: str, passed: bool) -> None:
         print(("PASS  " if passed else "FAIL  ") + name)
         if not passed:
             failures.append(name)
+
+    check("release during recovery open closes the first stream", release_during_open(False))
+    check("Escape during open cancels before key-up", release_during_open(True))
+    if not _event_system_available():
+        print("SKIP: native event checks require a window server")
+        return int(bool(failures))
 
     for name, (right_kc, left_kc, right_bit, left_bit, mask) in HOTKEYS.items():
         label = name.replace("_", " ")

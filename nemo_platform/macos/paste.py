@@ -49,10 +49,10 @@ def paste_text(text: str) -> bool:
         return False
     for _ in range(20):  # ~100 ms cap
         if _holds(text):
-            break
+            _post_command_v()
+            return True
         time.sleep(0.005)
-    _post_command_v()
-    return True
+    return False
 
 
 def _post_command_v() -> None:

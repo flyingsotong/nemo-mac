@@ -12,6 +12,7 @@ import json
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -47,11 +48,124 @@ def _contrast(a, b) -> float:
     return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
 
 
+def test_capture_and_engine(tmp: Path) -> bool:
+    ok = True
+    samples = np.arange(2048, dtype=np.int16)
+    for rate, channels in ((48000, 1), (48000, 2), (44100, 1)):
+        recorder = nemo.Recorder()
+        recorder._rate = rate
+        frames = np.tile(samples[:, None], (1, channels))
+        recorder._blocks = list(np.split(frames, 2))
+        pcm = recorder.stop()
+        expected = (samples[:2046].reshape(-1, 3).mean(axis=1) if rate == 48000 else
+                    np.linspace(0, 2047, round(2048 * 16000 / rate)))
+        ok &= check(f"{rate} Hz x{channels} preserves the take",
+                    np.array_equal(pcm, expected.astype(np.int16)))
+
+    server = nemo.Server(12345)
+    state = tmp / "engine.json"
+    with (patch.object(server, "_state_file", return_value=state),
+          patch.object(server, "_listening", return_value=True) as listening,
+          patch.object(server, "_listen_pid", return_value=123) as pid,
+          patch.object(nemo, "SERVER_EXE", Path(sys.executable)),
+          patch.object(nemo.subprocess, "check_output", return_value=sys.executable) as exe,
+          patch.object(nemo.os, "kill") as kill,
+          patch.object(nemo.time, "sleep")):
+        for model in (nemo.MODEL.name, "old.bin"):
+            state.write_text(json.dumps({"pid": 321, "model": model}))
+            ok &= check("stale engine PID is refused", not server.ensure())
+            server.shutdown()
+            ok &= check("foreign listener and state are untouched",
+                        not kill.called and state.exists())
+        state.write_text(json.dumps({"pid": 123, "model": nemo.MODEL.name}))
+        exe.return_value = "/bin/sh"
+        ok &= check("reused PID with wrong executable is refused", not server.ensure())
+        def process_info(args, **kwargs):
+            if args[-1] == "comm=":
+                return sys.executable
+            return f"{sys.executable} -m {live_model} --host 127.0.0.1 --port 12345 -t 4"
+
+        live_model = nemo.MODELS_DIR / "old.bin"
+        exe.side_effect = process_info
+        ok &= check("same executable with another model is refused", not server.ensure())
+        live_model = nemo.MODEL
+        ok &= check("matching engine is adopted", server.ensure() and server._adopted_pid == 123)
+        pid.return_value = 456
+        server.shutdown()
+        ok &= check("shutdown rechecks an adopted PID", not kill.called)
+        pid.return_value = 123
+        state.write_text(json.dumps({"pid": 123, "model": "old.bin"}))
+        live_model = nemo.MODELS_DIR / "old.bin"
+        ok &= check("lingering wrong-model listener cannot report ready",
+                    not server.ensure() and state.exists())
+        listening.side_effect = [True, False, False, True]
+        with patch.object(nemo.subprocess, "Popen") as spawn:
+            spawn.return_value.poll.return_value = None
+            spawn.return_value.pid = 456
+            spawn.return_value.stderr = []
+            pid.side_effect = [123, 123, 456]
+            ok &= check("verified model mismatch stops survivor and starts configured engine",
+                        server.ensure() and kill.call_args.args == (123, 15)
+                        and str(nemo.MODEL) in spawn.call_args.args[0]
+                        and json.loads(state.read_text())["pid"] == 456)
+    return ok
+
+
+def test_warming() -> bool:
+    server = Mock()
+    app = nemo.Nemo(None, server, None)
+    stop = Mock()
+    stop.wait.side_effect = [False, False, True]
+    with (patch.object(nemo.time, "monotonic", return_value=1000),
+          patch.object(nemo, "KEEP_WARM_SEC", 300),
+          patch.object(nemo, "keep_warm_interval", return_value=900) as power):
+        nemo.keep_warm_loop(app, stop)
+        ok = check("startup warms once and next idle tick skips power query",
+                   server.transcribe.call_count == power.call_count == 1
+                   and server.transcribe.call_args.kwargs == {"ac": 128})
+        app._started_at = 0
+        app.warm_if_due(60, key_down=True)
+        app.warm_if_due(60)
+        ok &= check("key-down and wake use the timer inference time",
+                    server.transcribe.call_count == 1)
+        app._last_inference = 500
+        stop.wait.side_effect = [False, False, True]
+        nemo.keep_warm_loop(app, stop)
+        ok &= check("battery interval caches power decision across idle ticks",
+                    power.call_count == 2 and server.transcribe.call_count == 1)
+        server.transcribe.side_effect = lambda *a, **kw: app.warm_if_due(60)
+        app.warm_if_due(60, key_down=True)
+        ok &= check("in-flight warm suppresses another warm", server.transcribe.call_count == 2)
+        app._last_inference = 0
+        server.transcribe.side_effect = OSError("offline")
+        app.warm_if_due(60)
+        ok &= check("failed warm does not advance inference time", app._last_inference == 0)
+        server.transcribe.side_effect = None
+        server.transcribe.return_value = ""
+        with patch.object(nemo, "beep"):
+            app._finish(np.full(32000, 16000, dtype=np.int16))
+        ok &= check("a completed real inference suppresses a warm even with empty text",
+                    app._last_inference == 1000 and app.warm_if_due(60) is None)
+    return ok
+
+
 def main() -> int:
     ok = True
     original = nemo.LEVELS_FILE
     with tempfile.TemporaryDirectory() as tmp:
         nemo.LEVELS_FILE = Path(tmp) / "mic_levels.json"
+
+        ok &= test_capture_and_engine(Path(tmp))
+        ok &= test_warming()
+        if sys.platform == "darwin":
+            from nemo_platform.macos import paste
+            with (patch.object(paste, "copy_text", return_value=True),
+                  patch.object(paste, "_holds", return_value=False) as holds,
+                  patch.object(paste.time, "sleep"), patch.object(paste, "_post_command_v") as post):
+                ok &= check("clipboard timeout suppresses Command-V",
+                            not paste.paste_text("take") and not post.called and holds.call_count == 20)
+                holds.side_effect = [False, True]
+                ok &= check("matching clipboard posts once", paste.paste_text("take") and post.call_count == 1)
 
         # --- the gate may only ever loosen ---------------------------------
         ok &= check("gate is the constant before 20 takes",
@@ -233,7 +347,13 @@ def main() -> int:
             ok &= check("the Mac pill uses SF Pro first",
                         _font_candidates()[0].endswith("SFNS.ttf"))
             ok &= check("a junk theme follows the system", normalise("sidebar") == "system")
-            ok &= check("resolve never returns system", resolve("system") in ("light", "dark"))
+            # Query both appearances without registering a GUI app in a headless run.
+            with patch("nemo_platform.macos.theme.NSApplication") as application:
+                appearance = application.sharedApplication.return_value.effectiveAppearance.return_value
+                for name, expected in (("NSAppearanceNameAqua", "light"),
+                                       ("NSAppearanceNameDarkAqua", "dark")):
+                    appearance.bestMatchFromAppearancesWithNames_.return_value = name
+                    ok &= check(f"resolve follows system {expected}", resolve("system") == expected)
             ok &= check("resolve honours a pinned theme", resolve("light") == "light")
 
         # --- microphone listing ---------------------------------------------

@@ -9,6 +9,7 @@ system, which is the "hotkey died until restart" bug.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import threading
 from typing import Callable
 
@@ -51,7 +52,12 @@ class TapListener:
                  on_escape: Callable[[], None], on_paused_press: Callable[[], None],
                  is_paused: Callable[[], bool], is_recording: Callable[[], bool],
                  suppress: bool, log: Callable[[str], None],
-                 hotkey: str = DEFAULT_HOTKEY) -> None:
+                 hotkey: str = DEFAULT_HOTKEY,
+                 on_hold: Callable[[threading.Event], None] | None = None) -> None:
+        # Preserve edge order even when a device takes a long time to open.
+        self._workers = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nemo-key")
+        self._on_hold = on_hold
+        self._ended = None
         self._on_press = on_press
         self._on_release = on_release
         self._on_escape = on_escape
@@ -88,6 +94,7 @@ class TapListener:
                 pass
         if self._thread is not None:
             self._thread.join(timeout=2.0)
+        self._workers.shutdown(wait=True, cancel_futures=True)
 
     def join(self, timeout: float | None = None) -> None:
         if self._thread is not None:
@@ -102,7 +109,7 @@ class TapListener:
                 self._log(f"wake: could not re-enable tap: {exc}")
 
     def _spawn(self, fn: Callable[[], None]) -> None:
-        threading.Thread(target=fn, daemon=True).start()
+        self._workers.submit(fn)
 
     def _handle(self, proxy, event_type, event, refcon):
         etype = int(event_type) & 0xFFFFFFFF
@@ -121,7 +128,9 @@ class TapListener:
         if event_type == Quartz.kCGEventKeyDown and _keycode(event) == ESCAPE:
             # Observed, never swallowed. Secure-input fields never reach us, which
             # is the correct behaviour, not a bug to fight.
-            if self._is_recording():
+            if self._ended is not None or self._is_recording():
+                if self._ended is not None:
+                    self._ended.set()
                 self._spawn(self._on_escape)
             return event
 
@@ -151,7 +160,14 @@ class TapListener:
         else:
             return event
 
-        if self._is_paused():
+        paused = self._is_paused()
+        if not now_down and self._ended is not None:
+            self._ended.set()
+            self._ended = None
+            if paused:
+                self._spawn(self._on_escape)
+
+        if paused:
             if now_down and not self._down:
                 self._down = True
                 self._spawn(self._on_paused_press)
@@ -161,7 +177,11 @@ class TapListener:
 
         if now_down and not self._down:
             self._down = True
-            self._spawn(self._on_press)
+            if self._on_hold is None:
+                self._spawn(self._on_press)
+            else:
+                self._ended = threading.Event()
+                self._workers.submit(self._on_hold, self._ended)
         elif not now_down and self._down:
             self._down = False
             self._spawn(self._on_release)
@@ -215,20 +235,21 @@ class TapListener:
 def install(app, suppress: bool, push: bool, log, hotkey: str = DEFAULT_HOTKEY) -> TapListener:
     """Wire the tap to the app. Push-to-talk is the default; toggle is the option."""
 
-    def on_press() -> None:
+    def on_press(ended=None) -> None:
         from nemo_platform.macos.power import set_interactive_qos
         set_interactive_qos()
         if push:
-            app.press()
+            app.press(ended)
         else:
-            app.toggle()
+            app.toggle(background=True)
 
     def on_release() -> None:
         if push:
-            app.release()
+            app.release(background=True)
 
     listener = TapListener(
         on_press=on_press,
+        on_hold=on_press if push else None,
         on_release=on_release,
         on_escape=app.cancel,
         on_paused_press=lambda: app._state("paused"),
