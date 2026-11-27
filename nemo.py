@@ -1290,7 +1290,9 @@ def keep_warm_once(server: "Server", label: str = "keep-warm",
     pcm = np.zeros(int(SAMPLE_RATE * seconds), dtype=np.int16)
     t0 = time.perf_counter()
     try:
-        server.transcribe(pcm_to_wav(pcm), ac=audio_context_frames(pcm))
+        # Omit ac: the server's -ac default is what v0.7 warmed with. Sending a
+        # small per-request window here left the next take slow and garbled.
+        server.transcribe(pcm_to_wav(pcm))
     except Exception as exc:
         log(f"{label} failed: {exc}")
         return False

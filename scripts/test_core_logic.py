@@ -122,7 +122,7 @@ def test_warming() -> bool:
         nemo.keep_warm_loop(app, stop)
         ok = check("startup warms once and next idle tick skips power query",
                    server.transcribe.call_count == power.call_count == 1
-                   and server.transcribe.call_args.kwargs == {"ac": 128})
+                   and server.transcribe.call_args.kwargs == {})
         app._started_at = 0
         app.warm_if_due(60, key_down=True)
         app.warm_if_due(60)
