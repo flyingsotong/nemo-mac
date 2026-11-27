@@ -89,6 +89,10 @@ WARM_ON_PRESS_IDLE = 60.0
 # fixed the padded-K/V flash-attention bug that made varying windows corrupt the
 # next decode. Long takes and repetition retries no longer restart the engine.
 AUDIO_CTX = 640
+# Smallest per-request window we will ask the engine for. Below this the decoder
+# drops the start of short takes and loops on longer ones; 640 is the server's
+# own default and the only window verified stable across 1-6 s speech.
+WINDOW_FLOOR = 640
 # Learned gate. Not overridable: a gate that can be set stricter than the
 # constant would start rejecting speech that works today.
 GATE_MIN_SAMPLES = 20
@@ -952,10 +956,11 @@ def privacy_line() -> str:
 def audio_context_frames(pcm: np.ndarray) -> int:
     """Frames of encoder window for this utterance, plus a small tail margin.
 
-    One frame is 20 ms (1500 frames = 30 s). Too small and the tail is clipped.
+    One frame is 20 ms (1500 frames = 30 s). Floored at WINDOW_FLOOR: smaller
+    windows truncate short speech and loop on longer clips.
     """
     frames = (len(pcm) + 319) // 320 + 32
-    return max(128, min(1500, frames))
+    return max(WINDOW_FLOOR, min(1500, frames))
 
 
 def looks_looped(text: str, span: int = 8) -> bool:
@@ -1865,7 +1870,7 @@ def main() -> int:
                 with wave.open(str(args.file), "rb") as wf:
                     frames = wf.getnframes()
                     rate = wf.getframerate() or SAMPLE_RATE
-                need = max(128, min(1500,
+                need = max(WINDOW_FLOOR, min(1500,
                                     (int(frames * SAMPLE_RATE / rate) + 319) // 320 + 32))
             except Exception:
                 need = None

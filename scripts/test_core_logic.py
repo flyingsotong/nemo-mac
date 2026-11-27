@@ -206,11 +206,13 @@ def main() -> int:
         # --- the encoder window --------------------------------------------
         one_second = np.zeros(16000, dtype=np.int16)
         ten_seconds = np.zeros(160000, dtype=np.int16)
-        ok &= check("window has a floor", nemo.audio_context_frames(one_second) >= 128)
+        ok &= check("window has a floor",
+                    nemo.audio_context_frames(one_second) == nemo.WINDOW_FLOOR)
         ok &= check("window has a ceiling",
                     nemo.audio_context_frames(np.zeros(16000 * 40, dtype=np.int16)) == 1500)
         ok &= check("window grows with audio",
-                    nemo.audio_context_frames(ten_seconds) > nemo.audio_context_frames(one_second))
+                    nemo.audio_context_frames(np.zeros(16000 * 20, dtype=np.int16))
+                    > nemo.audio_context_frames(ten_seconds))
         # 1500 frames is 30 s, so 10 s of audio needs ~500 frames; the margin must
         # leave room without wasting most of the window.
         need = nemo.audio_context_frames(ten_seconds)
