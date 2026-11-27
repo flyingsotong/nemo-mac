@@ -103,6 +103,33 @@ def main() -> int:
         ok &= check("window fits 10 s of audio", need >= 500 + 32, str(need))
         ok &= check("window is not wildly oversized", need <= 800, str(need))
 
+        # --- per-request windows never restart the engine ------------------
+        class FakeServer:
+            def __init__(self, texts):
+                self.texts = list(texts)
+                self.calls = []
+
+            def transcribe(self, wav, prompt="", ac=None):
+                self.calls.append(ac)
+                return self.texts.pop(0)
+
+            def ensure(self, **kwargs):
+                raise AssertionError("a window change must not restart the engine")
+
+        looped = ("we should ship this today because it is ready " * 2).strip()
+        fake = FakeServer([looped, "we should ship this today because it is ready"])
+        text, used = nemo.transcribe_guarded(fake, b"wav", "", ac=640)
+        ok &= check("loop retry uses a bigger window, not a restart",
+                    fake.calls == [640, 1500], str(fake.calls))
+        ok &= check("loop retry reports the window used", used == 1500, str(used))
+        ok &= check("loop retry returns the clean transcript",
+                    text == "we should ship this today because it is ready", text)
+
+        fake = FakeServer(["a clean sentence"])
+        text, used = nemo.transcribe_guarded(fake, b"wav", "", ac=768)
+        ok &= check("a clean take sends only its own window",
+                    fake.calls == [768] and used == 768, str(fake.calls))
+
         # --- hallucination filter ------------------------------------------
         ok &= check("whitespace is collapsed", nemo.clean("  hello \n  world  ") == "hello world")
         ok &= check("a known hallucination is dropped", nemo.clean("Thank you.") == "")

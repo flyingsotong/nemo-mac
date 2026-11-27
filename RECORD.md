@@ -523,9 +523,35 @@ and 241 ms. Both suites pass. Committed as `75aa833`, pushed to `main`, tagged
 rebuilt and signed with the same identity, so the Accessibility and Microphone
 grants survived.
 
-Deliberately not in 0.6: per-request `audio_ctx`. Upstream v1.9.6 fixes the
-flash-attention padded-K/V bug that forced the fixed-window restart design, but
-Homebrew here still serves 1.9.5_2 and the fix was validated on CUDA, not Metal.
-A q8_0 model is also queued as an A/B — half the weights and effectively
-identical text in published tests, but only about 8% faster, so it does not
-justify a release on its own.
+Deliberately not in 0.6: per-request `audio_ctx`. The reason recorded here —
+that Homebrew still served 1.9.5_2 — was wrong, a stale API cache in the agent's
+sandbox. Homebrew landed 1.9.6 on 23 Nov. The fix was then verified on Metal on
+this Mac, which is what made 0.7 possible. A q8_0 model is also queued as an A/B
+— half the weights and effectively identical text in published tests, but only
+about 8% faster, so it does not justify a release on its own.
+
+## Per-request windows, 27 Nov 2026 (0.7)
+
+whisper.cpp 1.9.6 fixed the padded-K/V flash-attention bug described above. On
+this Mac an isolated 1.9.6 server was sent `--audio-ctx` values 1500/340/250/
+640/340 with a 3-second clip and returned clean, consistent text every time;
+the reverse order, starting at 640 and asking for 1500, was also clean. The
+restart design was therefore no longer needed.
+
+`Server.transcribe()` now takes an optional `ac` and sends it as the `audio_ctx`
+multipart field. `Server.ensure()` no longer takes a window or restarts to widen
+one; it starts the engine at `AUDIO_CTX` and adopts a surviving server after
+checking the model. `reset_window()` and `WINDOW_IDLE_RESET` are gone, and the
+idle keep-warm loop no longer resets a window.
+
+`transcribe_guarded()` now returns `(text, used_window)`. On an eight-word
+repeat it asks for 1500 on that request alone; the next take uses its own window
+again. Because the window is per request, `win=` in the take log now means the
+window that take used, not the engine's startup setting. All callers — hotkey,
+`--file` and `--selftest` — were updated together.
+
+Verification: both suites pass, with four new tests pinning that the retry does
+not call `ensure()` and that a clean take sends only its own window. The real
+`--file` path transcribed a 3-second clip and shut down cleanly. Version 0.7 in
+`nemo.py`, `build.sh` and both PlistBuddy branches. Requires whisper.cpp 1.9.6;
+the README and release notes say so.

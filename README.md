@@ -8,9 +8,9 @@ Hold **Right Command**, speak, let go. The text appears where your cursor is, in
 about a third of a second, entirely on this machine. No account, no cloud, no
 telemetry, no history on disk.
 
-Release notes: [0.6](docs/release-notes-v0.6.md),
-[0.5](docs/release-notes-v0.5.md), [0.4](docs/release-notes-v0.4.md),
-[0.2](docs/release-notes-v0.2.md).
+Release notes: [0.7](docs/release-notes-v0.7.md),
+[0.6](docs/release-notes-v0.6.md), [0.5](docs/release-notes-v0.5.md),
+[0.4](docs/release-notes-v0.4.md), [0.2](docs/release-notes-v0.2.md).
 
 ![The pill while listening](docs/hero.png?v=2)
 

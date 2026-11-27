@@ -44,7 +44,7 @@ VOCAB_FILE = ROOT / "vocabulary.txt"
 VOCAB_MAX_CHARS = 600     # whisper's prompt window is small; stay well inside it
 
 APP_NAME = "Nemo"
-APP_VERSION = "0.6"
+APP_VERSION = "0.7"
 
 # ---- knobs ----------------------------------------------------------------
 HOTKEY_VK = 0xA5          # Windows: Right Alt (VK_RMENU)
@@ -83,11 +83,11 @@ KEEP_WARM_SEC = 300
 # still pay ~200 ms to wake the GPU. At key-down, start that work while the mic
 # is opening. Long enough that a normal in-session press never fires it.
 WARM_ON_PRESS_IDLE = 60.0
-# Encoder window, in 20 ms frames. Whisper always encodes a fixed window; 1500
-# frames is the 30 s default and 640 is 12.8 s. This is a *server* setting, not a
-# per-request field: measured on this build, varying audio_ctx between requests
-# corrupts the next decode, and a smaller-than-audio window degrades far beyond
-# mere truncation. A take longer than this window restarts the server larger.
+# Default encoder window, in 20 ms frames. Whisper always encodes a fixed window;
+# 1500 frames is the 30 s default and 640 is 12.8 s. The server still starts with
+# this value, but each request now sends its own audio_ctx: whisper.cpp 1.9.6
+# fixed the padded-K/V flash-attention bug that made varying windows corrupt the
+# next decode. Long takes and repetition retries no longer restart the engine.
 AUDIO_CTX = 640
 # Learned gate. Not overridable: a gate that can be set stricter than the
 # constant would start rejecting speech that works today.
@@ -95,10 +95,6 @@ GATE_MIN_SAMPLES = 20
 GATE_FRACTION = 0.35
 GATE_FLOOR = 0.002
 SLOW_MS = 400
-# A long take widens the encoder window and it cannot shrink in place (that
-# corrupts the next decode on this build), so the window returns to normal by
-# restarting the engine - only ever while idle, where the reload is invisible.
-WINDOW_IDLE_RESET = 90.0
 PEAKS_MAX = 500
 PASTE = True
 BEEP = False              # the pill is the feedback now; beeps off by default
@@ -515,17 +511,13 @@ class Server:
         return {"ready": True, "accelerator": "?", "device": "Engine: backend unknown"}
 
 
-    def ensure(self, wait: float = 180.0, ac: int | None = None) -> bool:
-        """Start the server, or widen its encoder window for a long take.
+    def ensure(self, wait: float = 180.0) -> bool:
+        """Start the server if it is not already listening.
 
-        A window that only ever grows is safe on this build; changing it between
-        requests is not. So a take that needs more frames costs one restart and
-        then stays wide until the app restarts.
+        The encoder window is per request now, so a long take never restarts the
+        engine to widen it. Adoption still checks the model before trusting a
+        server left behind by an earlier run.
         """
-        # AUDIO_CTX is a macOS knob. On Windows the flag is not sent, so it must
-        # not drive restarts there: a long take would bounce a working server.
-        base = int(AUDIO_CTX)
-        want = max(int(ac or 0), int(self.ac or 0), base)
         if self._listening():
             if self.proc is None and not self._adopted_pid:
                 # Something is already serving our port: an engine left behind by
@@ -542,13 +534,9 @@ class Server:
                 else:
                     self._adopted_pid = self._listen_pid()
                     log(f"adopting existing engine (pid {self._adopted_pid or '?'}, "
-                        f"{MODEL.name}); window unknown, treating it as {want} frames")
+                        f"{MODEL.name}); windows are per request")
             if self._listening():
-                limit = int(self.ac or base)
-                if want <= limit:
-                    return True
-                log(f"widening encoder window {limit} -> {want} frames")
-                self.shutdown()
+                return True
         # If another thread is already starting it (tray reload during a
         # dictation, say), wait for it to come up rather than serialising behind
         # the lock for up to `wait` seconds.
@@ -571,7 +559,7 @@ class Server:
             if sys.platform == "darwin":
                 # Greedy: for determinism, not speed (measured: no gain).
                 # -mc 0 stops one dictation's text leaking into the next.
-                args += ["-bs", "1", "-bo", "1", "-mc", "0", "-ac", str(want)]
+                args += ["-bs", "1", "-bo", "1", "-mc", "0", "-ac", str(int(AUDIO_CTX))]
             if LANGUAGE:
                 args += ["-l", LANGUAGE]
             flags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
@@ -592,9 +580,10 @@ class Server:
                     log(f"server exited with {self.proc.returncode}")
                     return False
                 if self._listening():
-                    self.ac = want
-                    self._write_state(want)
-                    log(f"server ready on port {self.port} (window {want} frames)")
+                    self.ac = int(AUDIO_CTX)
+                    self._write_state(self.ac)
+                    log(f"server ready on port {self.port} (window {self.ac} frames, "
+                        "per-request overrides)")
                     return True
                 time.sleep(0.15)
             log("server did not become ready")
@@ -602,7 +591,8 @@ class Server:
         finally:
             self._lock.release()
 
-    def transcribe(self, wav_bytes: bytes, prompt: str = "") -> str:
+    def transcribe(self, wav_bytes: bytes, prompt: str = "",
+                   ac: int | None = None) -> str:
         boundary = "----nemo" + uuid.uuid4().hex
         parts: list[bytes] = []
 
@@ -619,6 +609,10 @@ class Server:
         )
         field("response_format", "text")
         field("temperature", "0")
+        if ac:
+            # whisper.cpp 1.9.6 made this safe per request. Earlier builds kept
+            # padded K/V rows between calls and garbled the next decode.
+            field("audio_ctx", str(int(ac)))
         if LANGUAGE:
             field("language", LANGUAGE)
         if prompt:
@@ -633,20 +627,6 @@ class Server:
         )
         with urllib.request.urlopen(req, timeout=180) as resp:
             return resp.read().decode("utf-8", "replace")
-
-    def reset_window(self, ac: int | None = None) -> bool:
-        """Shrink the encoder window back to the configured default.
-
-        Shrinking in place corrupts decodes on this build, so this costs a restart;
-        it is only ever called while idle. Returns True if the engine came back.
-        """
-        target = int(ac or AUDIO_CTX)
-        if not self.ac or self.ac <= target:
-            return False
-        log(f"window reset: {self.ac} -> {target} frames")
-        self.shutdown()
-        self.ac = 0
-        return self.ensure(ac=target)
 
     def _state_file(self) -> Path:
         return DATA / "engine.json"
@@ -1041,23 +1021,26 @@ def vocabulary_prompt() -> str:
         return ""
 
 
-def transcribe_guarded(server: "Server", wav: bytes, prompt: str) -> str:
-    """Transcribe, and repair the one failure this engine gives us.
+def transcribe_guarded(server: "Server", wav: bytes, prompt: str,
+                       ac: int | None = None) -> tuple[str, int | None]:
+    """Transcribe with a per-request window, and repair a decoder loop.
 
-    A window below the model's full 30 s can make the decoder repeat a sentence.
-    The check is cheap and the retry is rare, and a doubled sentence in a document
-    is worse than a slower take. Used by the hotkey path, --file and --selftest so
-    they cannot disagree about what the app does.
+    A window below the model's full 30 s can still make the decoder repeat a
+    sentence. The retry asks for the full window on this one request only; no
+    restart, and the next take goes back to its own window. Returns the text and
+    the window that produced it. Used by the hotkey path, --file and --selftest
+    so they cannot disagree about what the app does.
     """
-    text = clean(server.transcribe(wav, prompt))
-    if looks_looped(text) and (server.ac or 0) < 1500:
-        log(f"repetition at window {server.ac}; retrying at 1500")
+    used = ac
+    text = clean(server.transcribe(wav, prompt, ac=ac))
+    if looks_looped(text) and (ac or int(AUDIO_CTX)) < 1500:
+        log(f"repetition at window {ac}; retrying at 1500")
         try:
-            server.ensure(ac=1500)
-            text = clean(server.transcribe(wav, prompt))
+            text = clean(server.transcribe(wav, prompt, ac=1500))
+            used = 1500
         except Exception as exc:
             log(f"retry at full window failed: {exc}")
-    return text
+    return text, used
 
 
 def trim_silence(pcm: np.ndarray, margin: float = 0.15,
@@ -1284,15 +1267,6 @@ def keep_warm_loop(app: "Nemo", stop: threading.Event) -> None:
     while not stop.wait(2.0):
         if app.recorder.active or app._busy.locked() or app.paused:
             continue
-        # One long dictation widens the window for every take after it. Put it back
-        # while nobody is waiting: a restart now, not 200 ms on every sentence.
-        server = app.server
-        idle = time.time() - app._last_take_at
-        if server.ac and server.ac > int(AUDIO_CTX) and idle > WINDOW_IDLE_RESET:
-            log(f"idle {idle:.0f}s with a {server.ac}-frame window; "
-                f"returning to {int(AUDIO_CTX)}")
-            server.reset_window()
-            continue
         interval = keep_warm_interval()
         if interval <= 0 or time.time() - last < interval:
             continue
@@ -1490,15 +1464,16 @@ class Nemo:
                 f"{len(trimmed)/SAMPLE_RATE:.1f}s")
             pcm = trimmed
         need = audio_context_frames(pcm)
-        if not self.server.ensure(ac=need):
+        if not self.server.ensure():
             log("server did not become ready")
             self._state("error")
             beep("error")
             return
         t0 = time.perf_counter()
         try:
-            text = apply_vocabulary(transcribe_guarded(
-                self.server, pcm_to_wav(pcm), vocabulary_prompt()))
+            text, used = transcribe_guarded(
+                self.server, pcm_to_wav(pcm), vocabulary_prompt(), ac=need)
+            text = apply_vocabulary(text)
         except Exception as exc:
             log(f"transcribe failed: {exc}")
             self._state("error")
@@ -1522,10 +1497,9 @@ class Nemo:
         # Report the whole path, not just the server call: the output half is a
         # real part of what he feels and it used to be invisible in the log.
         total = (time.perf_counter() - t0) * 1000
-        # An adopted server (one we did not start) has no known window; say so
-        # rather than printing 0.
-        win = self.server.ac or "adopted"
-        ctx_note = f" win={win}"
+        # Log the window this take actually used, which is per request now —
+        # it is 1500 on the rare loop retry, not the server's startup default.
+        ctx_note = f" win={used}"
         log(f"audio {seconds:.1f}s{ctx_note} -> {elapsed:.0f}ms "
             f"+{total - elapsed:.0f}ms out = {total:.0f}ms peak={peak:.4f}: {text!r}")
         idle = time.time() - self._last_take_at
@@ -1799,13 +1773,13 @@ def main() -> int:
         if peak < MIN_PEAK:
             print("!! level below MIN_PEAK - pick another mic with --device", file=sys.stderr)
         need = audio_context_frames(pcm)
-        if not server.ensure(ac=need):
+        if not server.ensure():
             print("whisper server failed to start", file=sys.stderr)
             return 1
         t0 = time.perf_counter()
         try:
-            text = transcribe_guarded(
-                server, pcm_to_wav(pcm), vocabulary_prompt())
+            text, _ = transcribe_guarded(
+                server, pcm_to_wav(pcm), vocabulary_prompt(), ac=need)
         finally:
             server.shutdown()
         emit(f"[{(time.perf_counter()-t0)*1000:.0f} ms] {text!r}")
@@ -1824,11 +1798,11 @@ def main() -> int:
                                     (int(frames * SAMPLE_RATE / rate) + 319) // 320 + 32))
             except Exception:
                 need = None
-        if not server.ensure(ac=need):
+        if not server.ensure():
             print("whisper server failed to start", file=sys.stderr)
             return 1
         try:
-            text = transcribe_guarded(server, wav, vocabulary_prompt())
+            text, _ = transcribe_guarded(server, wav, vocabulary_prompt(), ac=need)
         finally:
             server.shutdown()
         emit(f"[{(time.perf_counter()-t0)*1000:.0f} ms] {text}")
